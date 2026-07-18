@@ -1,0 +1,12 @@
+outputs/
+data/downloads/
+assets/cache/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+__pycache__/
+.pytest_cache/
+.venv/
+.env
