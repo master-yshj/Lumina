@@ -1,0 +1,13 @@
+# 配置的名称
+name: Example
+# 使用模块的模型来自于哪个目录
+model: ../models/Transformer
+# 种子
+seed : 42
+# 模块
+modules:
+  # Transformer的层数
+  num_layers: 1，
+
+
+Task: QA
