@@ -1,12 +1,48 @@
+# Experiment artifacts
 outputs/
-data/downloads/
-assets/cache/
 checkpoints/
+logs/
+runs/
+assets/cache/
+
+# Downloaded or generated datasets (keep source scripts)
+data/downloads/
+dataset/**/*.json
+dataset/**/*.jsonl
+dataset/**/*.xml
+dataset/**/*.xml/
+dataset/**/*.csv
+dataset/**/*.tsv
+dataset/**/*.parquet
+dataset/**/*.arrow
+dataset/**/*.gz
+dataset/**/*.zip
+dataset/**/*.tar
+dataset/**/*.tar.gz
+
+# Model weights and checkpoints
 *.pt
 *.pth
+*.ckpt
 *.bin
 *.safetensors
+
+# Python caches, environments, and tooling
 __pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
+venv/
 .env
+.env.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

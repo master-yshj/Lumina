@@ -1,0 +1,1 @@
+SUPPORTED_TASKS = {'mlm_pretrain',}

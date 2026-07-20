@@ -1,13 +1,36 @@
 # 配置的名称
-name: Example
+name: Example                 # essential
 # 使用模块的模型来自于哪个目录
-model: ../models/Transformer
+model:
+  type: "Transformer" #essential
+  model_path: "../models/Transformer"  # essential
 # 种子
-seed : 42
+seed : 42                     # default: 42
 # 模块
 modules:
-  # Transformer的层数
-  num_layers: 1，
+  # 具体架构顺序,可传E，D，T，E表示Encoder，D表示Decoder，T表示Transformer
+  order: [E,D,T]              # essential
+  layer_nums: [1,1,1]         # essential
 
+task: "MLM_PreTrain"          # essential
 
-Task: QA
+cuda:
+  gpu_nums: 1                 # default: torch.cuda.device_count()
+  num_workers: 0              # default: 0
+
+train:
+  dataset:
+    type: "tiny_zhwiki"
+    dataset_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki.jsonl"   # essential
+  batch_size: 8               # default: 8
+  accumulation_steps: 1       # default: 1
+  early_stop_patience: 10       # default: 10
+  total_iters: 10000          # default: 10000
+  loss: {cross_entropy_loss:1.0,}             # default: "{cross_entropy_loss:1,}"
+  optimizer: AdamW            # default: Adam
+  scheduler: StepLR           # default: StepLR
+  lr: 1e-3                    # default: 1e-3
+
+tokenizer:
+  type: ExampleTokenizer      # default: ExampleTokenizer
+  vocab_file_path: "../tokenizer/bert_base_chinese_tokenizer/vocab.txt"   # default: "../tokenizer/bert_base_chinese_tokenizer/vocab.txt"

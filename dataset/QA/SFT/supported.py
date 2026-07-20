@@ -1,0 +1,1 @@
+SUPPORTED_SFT_DATASET = {'cmrc2018_dev,cmrc2018_train,cmrc2018_trail'}
