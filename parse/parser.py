@@ -24,7 +24,7 @@ CUSTOM_DICT = {
     'train' : {
         'dataset': {
             'type': 'REQUIRED',
-            'datasets_path': 'REQUIRED',
+            'dataset_path': 'REQUIRED',
         },
         'batch_size': 8,
         'accumulation_steps': 1,
@@ -138,10 +138,10 @@ def relative_to_absolute_path(relative_path,base_path):
     :return: absolute_path 绝对路径
     """
     if pathlib.Path(relative_path).is_absolute():
-        return relative_path
+        return relative_path.resolve()
     else:
         absolute_path = base_path / relative_path
-        return absolute_path
+        return absolute_path.resolve()
 
 def relative_to_absolute_path_full_dict(dic,base_path):
     path_list = ["model_path","dataset_path","vocab_file_path"]
@@ -183,27 +183,27 @@ def validate_config(config_dict):
     # name 字段
     if not isinstance(copy_dict['name'],str):
         raise ValueError(f"任务名字 name: {copy_dict['name']} 必须是字符串类型的数据喵！")
-    if copy_dict['name'].strip() == '' or not copy_dict['name'].strip():
+    if not copy_dict['name'].strip():
         raise ValueError(f"名字不能为空喵！")
     # model 字段
     # model.type 字段
     if not isinstance(copy_dict['model']['type'],str):
         raise ValueError(f"模型名字 model.type: {copy_dict['model']['type']} 必须是字符串类型的数据喵！")
-    if copy_dict['model']['type'].strip() == '' or not copy_dict['model']['type'].strip():
+    if not copy_dict['model']['type'].strip():
         raise ValueError(f'模型名字不能为空喵！')
     if copy_dict['model']['type'].casefold() not in SUPPORTED_MODEL_TYPE:
         raise ValueError(f"你真的确定 model.type: {copy_dict['model']['type']} 这个类型没有问题嘛，请检查相应的supported文件和目录喵~")
     # model.model_path字段
     if not copy_dict['model']['model_path'].is_dir():
         raise ValueError(f"该目录 model.model_path: {copy_dict['model']['model_path']} 不存在喵！请好好检查！")
-    if copy_dict['model']['model_path'].is_file():
+    else:
         is_empty = not any(copy_dict['model']['model_path'].iterdir())
         if not is_empty:
             pass
         else:
             raise ValueError(f"该目录 model.model_path: {copy_dict['model']['model_path']} 下面不存在任何文件喵！")
     # seed 字段
-    if not isinstance(copy_dict['seed'],int) or copy_dict['seed'] <= 0:
+    if not type(copy_dict['seed']) is int or copy_dict['seed'] <= 0:
         raise ValueError(f"种子必须要正整数喵！")
     # modules 字段
     # modules.order 字段
@@ -213,7 +213,7 @@ def validate_config(config_dict):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 的列表内不能为空喵！")
     if not all(isinstance(module, str) for module in copy_dict['modules']['order']):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 里面的元素都必须要是字符串才行喵！")
-    if not all(module.strip() != '' or module.strip() for module in copy_dict['modules']['order']):
+    if not all(module.strip() for module in copy_dict['modules']['order']):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 里面的元素都不能为空喵！")
     if not all(elem.casefold() in SUPPORTED_MODULES for elem in copy_dict['modules']['order']):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 里面的元素不合法喵！找不到里面的模块喵！")
@@ -222,28 +222,28 @@ def validate_config(config_dict):
         raise ValueError(f"modules.layer_nums: {copy_dict['modules']['layer_nums']} 的值必须是列表类型的喵！")
     if len(copy_dict['modules']['layer_nums']) == 0:
         raise ValueError(f"modules.layer_nums: {copy_dict['modules']['layer_nums']} 里面的值不能为空喵！")
-    if not all(isinstance(module, int) for module in copy_dict['modules']['layer_nums']):
+    if not all(type(module) is int for module in copy_dict['modules']['layer_nums']):
         raise ValueError(f"modules.layer_nums: {copy_dict['modules']['layer_nums']} 里面的元素都必须要是整型才行喵！")
     if not all(num > 0 for num in copy_dict['modules']['layer_nums']):
         raise ValueError(f"modules.layer_nums: {copy_dict['modules']['layer_nums']} 里面的元素都必须是正整数喵！")
     # modules.layer_nums和modules.order 比较字段
     if not len(copy_dict['modules']['order']) == len(copy_dict['modules']['layer_nums']):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 和 modules.layer_nums: {copy_dict['modules']['layer_nums']} 的列表层数不一样喵！请好好检查这两个参数喵！")
-    # tasks 字段
-    if not isinstance(copy_dict['tasks'],str):
-        raise ValueError(f"tasks: {copy_dict['tasks']} 的值必须是字符串类型的喵！")
-    if not copy_dict['tasks'].strip() or copy_dict['tasks'] == '':
-        raise ValueError(f"tasks: {copy_dict[tasks]} 的值不能为空喵！")
-    if not copy_dict['tasks'].casefold() in SUPPORTED_TASKS:
-        raise ValueError(f"tasks: {copy_dict['tasks']} 的任务类型不受支持喵！")
+    # task 字段
+    if not isinstance(copy_dict['task'],str):
+        raise ValueError(f"task: {copy_dict['task']} 的值必须是字符串类型的喵！")
+    if not copy_dict['task'].strip():
+        raise ValueError(f"task: {copy_dict['task']} 的值不能为空喵！")
+    if not copy_dict['task'].casefold() in SUPPORTED_TASKS:
+        raise ValueError(f"task: {copy_dict['task']} 的任务类型不受支持喵！")
     # cuda 字段
     # cuda.gpu_nums 字段
-    if not isinstance(copy_dict['cuda']['gpu_nums'],int):
+    if not type(copy_dict['cuda']['gpu_nums']) is int:
         raise ValueError(f"cuda.gpu_nums: {copy_dict['cuda']['gpu_nums']} 的值必须是整型的喵！")
     if copy_dict['cuda']['gpu_nums'] <= 0:
         raise ValueError(f"cuda.gpu_nums: {copy_dict['cuda']['gpu_nums']} 的值必须是正整数的喵！0也不行喵！")
     # cuda.num_workers 字段
-    if not isinstance(copy_dict['cuda']['num_workers'],int):
+    if not type(copy_dict['cuda']['num_workers'] is int):
         raise ValueError(f"cuda.num_workers: {copy_dict['cuda']['num_workers']} 的值必须是整型的喵！")
     if copy_dict['cuda']['num_workers'] < 0:
         raise ValueError(f"cuda.num_workers: {copy_dict['cuda']['num_workers']} 的值必须是正整数或者0才行的喵！")
@@ -252,7 +252,7 @@ def validate_config(config_dict):
     # train.dataset.type 字段
     if not isinstance(copy_dict['train']['dataset']['type'],str):
         raise ValueError(f"train.dataset.type: {copy_dict['train']['dataset']['type']} 的值必须是字符串类型的喵！")
-    if not copy_dict['train']['dataset']['type'].strip() or copy_dict['train']['dataset']['type'].strip() == '':
+    if not copy_dict['train']['dataset']['type'].strip():
         raise ValueError(f"train.dataset.type: {copy_dict['train']['dataset']['type']} 的值不能为空喵！")
     if not copy_dict['train']['dataset']['type'].casefold() in SUPPORTED_DATASET:
         raise ValueError(f"train.dataset.type: {copy_dict['train']['datset']['type']} 的数据集类型不受支持喵！")
