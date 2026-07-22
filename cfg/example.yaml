@@ -27,10 +27,11 @@ train:
   batch_size: 8               # default: 8
   accumulation_steps: 1       # default: 1
   total_iters: 10000          # default: 10000
-  loss: {CrossEntropyLoss:1.0,}             # default: "{cross_entropy_loss:1,}"
+  loss:
+    CrossEntropyLoss: 1.0      # default: "{CrossEntropyLoss:1,}"
   optimizer: AdamW            # default: Adam
   scheduler: StepLR           # default: StepLR
-  lr: 1e-3                    # default: 1e-3
+  lr: 1.0e-3                    # default: 1.0e-3
 
 valid:
   dataset:

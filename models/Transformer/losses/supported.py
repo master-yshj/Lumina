@@ -1,1 +1,1 @@
-SUPPORTED_LOSSES = {'CrossEntropyLoss',}
+SUPPORTED_LOSSES = {'crossentropyloss',}

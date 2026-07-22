@@ -33,7 +33,11 @@ CUSTOM_DICT = {
         'loss': {
             'CrossEntropyLoss': 1.0,
         },
-        'valid': {
+        'optimizer': 'AdamW',
+        'scheduler': 'StepLR',
+        'lr': 1.0e-3,
+    },
+    'valid': {
             'dataset': {
                 'type': 'REQUIRED',
                 'dataset_val_path': 'REQUIRED',
@@ -42,15 +46,11 @@ CUSTOM_DICT = {
             'early_stop_patience': 10,
             'validation_rounds_before_save_ckpt': 1,
         } ,
-        'test': {
-            'dataset': {
-                'type': 'REQUIRED',
-                'dataset_test_path': 'REQUIRED',
-            }
-        },
-        'optimizer': 'AdamW',
-        'scheduler': 'StepLR',
-        'lr': 1e-3,
+    'test': {
+        'dataset': {
+            'type': 'REQUIRED',
+            'dataset_test_path': 'REQUIRED',
+        }
     },
     'tokenizer': {'type': 'ExampleTokenizer',
                   'vocab_file_path': "../tokenizer/bert_base_chinese_tokenizer/vocab.txt"
@@ -318,12 +318,14 @@ def validate_config(config_dict):
             raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的键必须为字符串类型的喵！")
         if not key.strip():
             raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的键不能为空喵！")
-        if not type(value) is float or not type(value) is int or value <= 0:
+        if (type(value) is float or type(value) is int) and value > 0:
+            pass
+        else:
             raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的值是损失的权重喵！必须为正数喵！")
         if not key.casefold() in SUPPORTED_LOSSES:
             raise ValueError(f"train.loss: {copy_dict['train']['loss']} 里面的 {key} 这种损失不受支持喵！请检查是否存在拼写错误（比如不能有下划线）")
     # train.optimizer 字段
-    if not isinstance(copy_dict['optimizer'], str):
+    if not isinstance(copy_dict['train']['optimizer'], str):
         raise ValueError(f"train.optimizer: {copy_dict['train']['optimizer']} 的值必须为字符串类型的喵！")
     if not copy_dict['train']['optimizer'].strip():
         raise ValueError(f"train.optimizer: {copy_dict['train']['optimizer']} 的值不能为空喵！")
@@ -337,7 +339,7 @@ def validate_config(config_dict):
     if not copy_dict['train']['scheduler'].casefold() in SUPPORTED_SCHEDULERS:
         raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 选择的调度器不受支持喵！")
     # train.lr 字段
-    if not type(copy_dict['train']['lr']) is int or type(copy_dict['dict']['lr']) is float or copy_dict['train']['lr'] <= 0:
+    if type(copy_dict['train']['lr']) not in (int,float) or copy_dict['train']['lr'] <= 0:
         raise ValueError(f"train.lr: {copy_dict['train']['lr']} 的值必须为正数喵！")
 
     # valid 字段

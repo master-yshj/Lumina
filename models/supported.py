@@ -1,5 +1,5 @@
 SUPPORTED_MODEL_TYPE = {'transformer',}
-from Transformer.supported import (SUPPORTED_LOSSES,
+from .Transformer.supported import (SUPPORTED_LOSSES,
                                    SUPPORTED_MODULES,
                                    SUPPORTED_TOKENIZERS,
                                    SUPPORTED_OPTIMIZERS,
