@@ -21,17 +21,32 @@ CUSTOM_DICT = {
         'gpu_nums': 1,
         'num_workers': 0,
     },
+    'dataset_path': 'REQUIRED',
     'train' : {
         'dataset': {
             'type': 'REQUIRED',
-            'dataset_path': 'REQUIRED',
+            'dataset_train_path': 'REQUIRED',
         },
         'batch_size': 8,
         'accumulation_steps': 1,
-        'early_stop_patience': 10,
         'total_iters': 10000,
         'loss': {
-            'cross_entropy_loss': 1.0,
+            'CrossEntropyLoss': 1.0,
+        },
+        'valid': {
+            'dataset': {
+                'type': 'REQUIRED',
+                'dataset_val_path': 'REQUIRED',
+            },
+            'valid_iters': 500,
+            'early_stop_patience': 10,
+            'validation_rounds_before_save_ckpt': 1,
+        } ,
+        'test': {
+            'dataset': {
+                'type': 'REQUIRED',
+                'dataset_test_path': 'REQUIRED',
+            }
         },
         'optimizer': 'AdamW',
         'scheduler': 'StepLR',
@@ -56,7 +71,9 @@ try:
     from models.supported import (SUPPORTED_MODEL_TYPE,
                                   SUPPORTED_MODULES,
                                   SUPPORTED_LOSSES,
-                                  SUPPORTED_TOKENIZERS)
+                                  SUPPORTED_TOKENIZERS,
+                                  SUPPORTED_OPTIMIZERS,
+                                  SUPPORTED_SCHEDULERS)
 
     import tasks.supported
     from tasks.supported import (SUPPORTED_TASKS,)
@@ -144,7 +161,7 @@ def relative_to_absolute_path(relative_path,base_path):
         return absolute_path.resolve()
 
 def relative_to_absolute_path_full_dict(dic,base_path):
-    path_list = ["model_path","dataset_path","vocab_file_path"]
+    path_list = ["model_path","dataset_path","dataset_train_path","dataset_val_path","dataset_test_path","vocab_file_path"]
     for key,value in dic.items():
         if isinstance(value,dict):
             relative_to_absolute_path_full_dict(value,base_path)
@@ -185,6 +202,7 @@ def validate_config(config_dict):
         raise ValueError(f"任务名字 name: {copy_dict['name']} 必须是字符串类型的数据喵！")
     if not copy_dict['name'].strip():
         raise ValueError(f"名字不能为空喵！")
+
     # model 字段
     # model.type 字段
     if not isinstance(copy_dict['model']['type'],str):
@@ -202,9 +220,11 @@ def validate_config(config_dict):
             pass
         else:
             raise ValueError(f"该目录 model.model_path: {copy_dict['model']['model_path']} 下面不存在任何文件喵！")
+
     # seed 字段
     if not type(copy_dict['seed']) is int or copy_dict['seed'] <= 0:
         raise ValueError(f"种子必须要正整数喵！")
+
     # modules 字段
     # modules.order 字段
     if not isinstance(copy_dict['modules']['order'], list):
@@ -229,6 +249,7 @@ def validate_config(config_dict):
     # modules.layer_nums和modules.order 比较字段
     if not len(copy_dict['modules']['order']) == len(copy_dict['modules']['layer_nums']):
         raise ValueError(f"modules.order: {copy_dict['modules']['order']} 和 modules.layer_nums: {copy_dict['modules']['layer_nums']} 的列表层数不一样喵！请好好检查这两个参数喵！")
+
     # task 字段
     if not isinstance(copy_dict['task'],str):
         raise ValueError(f"task: {copy_dict['task']} 的值必须是字符串类型的喵！")
@@ -236,6 +257,7 @@ def validate_config(config_dict):
         raise ValueError(f"task: {copy_dict['task']} 的值不能为空喵！")
     if not copy_dict['task'].casefold() in SUPPORTED_TASKS:
         raise ValueError(f"task: {copy_dict['task']} 的任务类型不受支持喵！")
+
     # cuda 字段
     # cuda.gpu_nums 字段
     if not type(copy_dict['cuda']['gpu_nums']) is int:
@@ -243,10 +265,23 @@ def validate_config(config_dict):
     if copy_dict['cuda']['gpu_nums'] <= 0:
         raise ValueError(f"cuda.gpu_nums: {copy_dict['cuda']['gpu_nums']} 的值必须是正整数的喵！0也不行喵！")
     # cuda.num_workers 字段
-    if not type(copy_dict['cuda']['num_workers'] is int):
+    if not type(copy_dict['cuda']['num_workers']) is int:
         raise ValueError(f"cuda.num_workers: {copy_dict['cuda']['num_workers']} 的值必须是整型的喵！")
     if copy_dict['cuda']['num_workers'] < 0:
         raise ValueError(f"cuda.num_workers: {copy_dict['cuda']['num_workers']} 的值必须是正整数或者0才行的喵！")
+
+    # dataset_path 字段
+    if not copy_dict['dataset_path'].is_dir():
+        raise ValueError(
+            f"dataset_path {copy_dict['dataset_path']} 不是目录喵！好好检查喵！")
+    else:
+        is_empty = not any(copy_dict['dataset_path'].iterdir())
+        if is_empty:
+            raise ValueError(
+                f"dataset_path: {copy_dict['dataset_path']} 该目录下面没有找到有效文件喵！")
+        else:
+            pass
+
     # train 字段
     # train.dataset 字段
     # train.dataset.type 字段
@@ -255,4 +290,114 @@ def validate_config(config_dict):
     if not copy_dict['train']['dataset']['type'].strip():
         raise ValueError(f"train.dataset.type: {copy_dict['train']['dataset']['type']} 的值不能为空喵！")
     if not copy_dict['train']['dataset']['type'].casefold() in SUPPORTED_DATASET:
-        raise ValueError(f"train.dataset.type: {copy_dict['train']['datset']['type']} 的数据集类型不受支持喵！")
+        raise ValueError(f"train.dataset.type: {copy_dict['train']['dataset']['type']} 的数据集类型不受支持喵！")
+    # train.dataset.dataset_train_path 字段
+    if not copy_dict['train']['dataset']['dataset_train_path'].is_file():
+        raise ValueError(f"train.dataset.dataset_train_path: {copy_dict['train']['dataset']['dataset_train_path']} 指向的不是一个文件喵！好好检查喵！")
+    if copy_dict['train']['dataset']['dataset_train_path'].stat().st_size == 0:
+        raise ValueError(f"train.dataset.dataset_train_path {copy_dict['train']['dataset']['dataset_train_path']} 指向的文件是空的喵！")
+    with open(copy_dict['train']['dataset']['dataset_train_path'], 'r', encoding='utf-8') as f:
+        if not any(line.strip() for line in f):
+            raise ValueError(f"train.dataset.dataset_train_path {copy_dict['train']['dataset']['dataset_train_path']} 指向的文件是空的喵！")
+    # train.batch_size 字段
+    if not type(copy_dict['train']['batch_size']) is int or copy_dict['train']['batch_size'] <= 0:
+        raise ValueError(f"train.batch_size: {copy_dict['train']['batch_size']} 的值必须为正整数喵！")
+    # train.accumulation_steps 字段
+    if not type(copy_dict['train']['accumulation_steps']) is int or copy_dict['train']['accumulation_steps'] <= 0:
+        raise ValueError(f"train.accumulation_steps: {copy_dict['train']['accumulation_steps']} 的值必须为正整数喵！")
+    # train.total_iters 字段
+    if not type(copy_dict['train']['total_iters']) is int or copy_dict['train']['total_iters'] <= 0:
+        raise ValueError(f"train.total_iters: {copy_dict['train']['total_iters']} 的值必须为正整数喵！")
+    # train.loss 字段
+    if not isinstance(copy_dict['train']['loss'], dict):
+        raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的值必须为字典喵！")
+    if not copy_dict['train']['loss']:
+        raise ValueError(f"train.loss: {copy_dict['train']['loss']} 里面是空的喵！")
+    for key,value in copy_dict['train']['loss'].items():
+        if not isinstance(key, str):
+            raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的键必须为字符串类型的喵！")
+        if not key.strip():
+            raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的键不能为空喵！")
+        if not type(value) is float or not type(value) is int or value <= 0:
+            raise ValueError(f"train.loss: {copy_dict['train']['loss']} 的值是损失的权重喵！必须为正数喵！")
+        if not key.casefold() in SUPPORTED_LOSSES:
+            raise ValueError(f"train.loss: {copy_dict['train']['loss']} 里面的 {key} 这种损失不受支持喵！请检查是否存在拼写错误（比如不能有下划线）")
+    # train.optimizer 字段
+    if not isinstance(copy_dict['optimizer'], str):
+        raise ValueError(f"train.optimizer: {copy_dict['train']['optimizer']} 的值必须为字符串类型的喵！")
+    if not copy_dict['train']['optimizer'].strip():
+        raise ValueError(f"train.optimizer: {copy_dict['train']['optimizer']} 的值不能为空喵！")
+    if not copy_dict['train']['optimizer'].casefold() in SUPPORTED_OPTIMIZERS:
+        raise ValueError(f"train.optimizer: {copy_dict['train']['optimizer']} 选择的优化器不受支持喵！")
+    # train.scheduler 字段
+    if not isinstance(copy_dict['train']['scheduler'], str):
+        raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 的值必须为字符串类型的喵！")
+    if not copy_dict['train']['scheduler'].strip():
+        raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 的值不能为空喵！")
+    if not copy_dict['train']['scheduler'].casefold() in SUPPORTED_SCHEDULERS:
+        raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 选择的调度器不受支持喵！")
+    # train.lr 字段
+    if not type(copy_dict['train']['lr']) is int or type(copy_dict['dict']['lr']) is float or copy_dict['train']['lr'] <= 0:
+        raise ValueError(f"train.lr: {copy_dict['train']['lr']} 的值必须为正数喵！")
+
+    # valid 字段
+    # valid.dataset 字段
+    # valid.dataset.type 字段
+    if not isinstance(copy_dict['valid']['dataset']['type'],str):
+        raise ValueError(f"valid.dataset.type: {copy_dict['valid']['dataset']['type']} 的值必须为字符串类型的喵！")
+    if not copy_dict['valid']['dataset']['type'].strip():
+        raise ValueError(f"valid.dataset.type: {copy_dict['valid']['dataset']['type']} 的值不能为空喵！")
+    if not copy_dict['valid']['dataset']['type'].casefold() in SUPPORTED_DATASET:
+        raise ValueError(f"valid.dataset.type: {copy_dict['valid']['dataset']['type']} 这个数据集不受支持喵！")
+    # valid.dataset.dataset_val_path 字段
+    if not copy_dict['valid']['dataset']['dataset_val_path'].is_file():
+        raise ValueError(f"valid.dataset.dataset_val_path: {copy_dict['valid']['dataset']['dataset_val_path']} 指向的不是一个文件喵！好好检查喵！")
+    if copy_dict['valid']['dataset']['dataset_val_path'].stat().st_size == 0:
+        raise ValueError(f"valid.dataset.dataset_val_path {copy_dict['valid']['dataset']['dataset_val_path']} 指向的文件是空的喵！")
+    with open(copy_dict['valid']['dataset']['dataset_val_path'], 'r', encoding='utf-8') as f:
+        if not any(line.strip() for line in f):
+            raise ValueError(f"valid.dataset.dataset_val_path {copy_dict['valid']['dataset']['dataset_val_path']} 指向的文件是空的喵！")
+    # valid.valid_iters 字段
+    if not type(copy_dict['valid']['valid_iters']) is int or copy_dict['valid']['valid_iters'] <= 0:
+        raise ValueError(f"valid.valid_iters: {copy_dict['valid']['valid_iters']} 的值必须要为正整数喵！")
+    # valid.early_stop_patience
+    if not type(copy_dict['valid']['early_stop_patience']) is int or copy_dict['valid']['early_stop_patience'] <= 0:
+        raise ValueError(f"valid.early_stop_patience: {copy_dict['valid']['early_stop_patience']} 的值必须要为正整数喵！")
+    # valid.validation_rounds_before_save_ckpt 字段
+    if not type(copy_dict['valid']['validation_rounds_before_save_ckpt']) is int or copy_dict['valid']['validation_rounds_before_save_ckpt'] <= 0:
+        raise ValueError(f"valid.validation_rounds_before_save_ckpt: {copy_dict['valid']['validation_rounds_before_save_ckpt']} 的值必须为正整数喵！")
+
+    # test 字段
+    # test.dataset 字段
+    # test.dataset.type 字段
+    if not isinstance(copy_dict['test']['dataset']['type'],str):
+        raise ValueError(f"test.dataset.type: {copy_dict['test']['dataset']['type']} 的值必须为字符串类型的喵！")
+    if not copy_dict['test']['dataset']['type'].strip():
+        raise ValueError(f"test.dataset.type: {copy_dict['test']['dataset']['type']} 的值不能为空喵！")
+    if not copy_dict['test']['dataset']['type'].casefold() in SUPPORTED_DATASET:
+        raise ValueError(f"test.dataset.type: {copy_dict['test']['dataset']['type']} 这个数据集不受支持喵！")
+    # test.dataset.dataset_test_path 字段
+    if not copy_dict['test']['dataset']['dataset_test_path'].is_file():
+        raise ValueError(f"test.dataset.dataset_test_path: {copy_dict['test']['dataset']['dataset_test_path']} 指向的不是一个文件喵！好好检查喵！")
+    if copy_dict['test']['dataset']['dataset_test_path'].stat().st_size == 0:
+        raise ValueError(f"test.dataset.dataset_test_path {copy_dict['test']['dataset']['dataset_test_path']} 指向的文件是空的喵！")
+    with open(copy_dict['test']['dataset']['dataset_test_path'], 'r', encoding='utf-8') as f:
+        if not any(line.strip() for line in f):
+            raise ValueError(f"test.dataset.dataset_test_path {copy_dict['test']['dataset']['dataset_test_path']} 指向的文件是空的喵！")
+
+    # tokenizer 字段
+    # tokenizer.type 字段
+    if not isinstance(copy_dict['tokenizer']['type'], str):
+        raise ValueError(f"tokenizer.type: {copy_dict['tokenizer']['type']} 的值必须为字符串类型的喵！")
+    if not copy_dict['tokenizer']['type'].strip():
+        raise ValueError(f"tokenizer.type: {copy_dict['tokenizer']['type']} 的值不能为空喵！")
+    if not copy_dict['tokenizer']['type'].casefold() in SUPPORTED_TOKENIZERS:
+        raise ValueError(f"tokenizer.type: {copy_dict['tokenizer']['type']} 这种tokenizer不受支持喵！")
+    # tokenizer.vocab_file_path 字段
+    if not copy_dict['tokenizer']['vocab_file_path'].is_file():
+        raise ValueError(f"tokenizer.vocab_file_path: {copy_dict['tokenizer']['vocab_file_path']} 指向的不是一个文件喵！请好好检查喵！")
+    if copy_dict['tokenizer']['vocab_file_path'].stat().st_size == 0:
+        raise ValueError(f"tokenizer.vocab_file_path: {copy_dict['tokenizer']['vocab_file_path']} 指向的文件是空的喵！")
+    with open(copy_dict['tokenizer']['vocab_file_path'], 'r', encoding='utf-8') as f:
+        if not any(line.strip() for line in f):
+            raise ValueError(f"tokenizer.vocab_file_path: {copy_dict['tokenizer']['vocab_file_path']} 指向的文件是空的喵！")

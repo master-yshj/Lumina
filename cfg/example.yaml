@@ -18,18 +18,32 @@ cuda:
   gpu_nums: 1                 # default: torch.cuda.device_count()
   num_workers: 0              # default: 0
 
+dataset_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki"                                     # essential
+
 train:
   dataset:
-    type: "tiny_zhwiki"
-    dataset_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki.jsonl"   # essential
+    type: "tiny_zhwiki"       # essential
+    dataset_train_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_train.jsonl"   # essential
   batch_size: 8               # default: 8
   accumulation_steps: 1       # default: 1
-  early_stop_patience: 10       # default: 10
   total_iters: 10000          # default: 10000
-  loss: {cross_entropy_loss:1.0,}             # default: "{cross_entropy_loss:1,}"
+  loss: {CrossEntropyLoss:1.0,}             # default: "{cross_entropy_loss:1,}"
   optimizer: AdamW            # default: Adam
   scheduler: StepLR           # default: StepLR
   lr: 1e-3                    # default: 1e-3
+
+valid:
+  dataset:
+    type: "tiny_zhwiki"
+    dataset_val_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_val.jsonl"       # essential
+  valid_iters: 500            # default: 500
+  early_stop_patience: 10     # default: 10
+  validation_rounds_before_save_ckpt: 1     # default: 1
+
+test:
+  dataset:
+    type: "tiny_zhwiki"
+    dataset_test_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_test.jsonl"     # essential
 
 tokenizer:
   type: ExampleTokenizer      # default: ExampleTokenizer
