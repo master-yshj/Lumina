@@ -1,10 +1,6 @@
-from pprint import pprint
-from parse.parser import load_yaml, build_config, validate_config
-
-yaml_path = "cfg/example.yaml"
-
-raw_config = load_yaml(yaml_path)
-config = build_config(raw_config, yaml_path)
-validate_config(config)
-
-pprint(config, sort_dicts=False)
+import pathlib
+from models.Transformer.tokenizer.tokenizer import ExampleTokenizer
+sentence = "hello 世界，你好, python"
+tokenizer = ExampleTokenizer(vocab_file_path=pathlib.Path("./tokenizer/bert_base_chinese_tokenizer/vocab.txt"))
+tokens = tokenizer.tokenize(text=sentence)
+print(tokens)
