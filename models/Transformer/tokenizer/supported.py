@@ -1,1 +1,1 @@
-SUPPORTED_TOKENIZERS = {'exampletokenizer',}
+SUPPORTED_TOKENIZERS = {'exampletokenizer','qatokenizer'}

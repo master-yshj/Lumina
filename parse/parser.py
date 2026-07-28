@@ -35,6 +35,14 @@ CUSTOM_DICT = {
         },
         'optimizer': 'AdamW',
         'scheduler': 'StepLR',
+        "embedding": {
+            "type": "BertEmbedding",
+            "hidden_size": 128,
+            "max_position_embeddings": 128,
+            "type_vocab_size": 2,
+            "dropout": 0.1,
+            "layer_norm_eps": 1.0e-12,
+        },
         'lr': 1.0e-3,
     },
     'valid': {
@@ -73,7 +81,8 @@ try:
                                   SUPPORTED_LOSSES,
                                   SUPPORTED_TOKENIZERS,
                                   SUPPORTED_OPTIMIZERS,
-                                  SUPPORTED_SCHEDULERS)
+                                  SUPPORTED_SCHEDULERS,
+                                  SUPPORTED_EMBEDDINGS)
 
     import tasks.supported
     from tasks.supported import (SUPPORTED_TASKS,)
@@ -338,6 +347,29 @@ def validate_config(config_dict):
         raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 的值不能为空喵！")
     if not copy_dict['train']['scheduler'].casefold() in SUPPORTED_SCHEDULERS:
         raise ValueError(f"train.scheduler: {copy_dict['train']['scheduler']} 选择的调度器不受支持喵！")
+    # train.embedding 字段
+    # train.embedding.type 字段
+    if not isinstance(copy_dict['train']['embedding']['type'], str):
+        raise ValueError(f"train.embedding.type: {copy_dict['train']['embedding']['type']} 的值必须为字符串类型的喵！")
+    if not copy_dict['train']['embedding']['type'].strip():
+        raise ValueError(f"train.embedding.type: {copy_dict['train']['embedding']['type']} 的值不能为空喵！")
+    if not copy_dict['train']['embedding']['type'].casefold() in SUPPORTED_EMBEDDINGS:
+        raise ValueError(f"train.embedding.type: {copy_dict['train']['embedding']['type']} 选择的嵌入层不受支持喵！")
+    # train.embedding.hidden_size 字段
+    if not type(copy_dict['train']['embedding']['hidden_size']) is int or copy_dict['train']['embedding']['hidden_size'] <= 0:
+        raise ValueError(f"train.embedding.hidden_size: {copy_dict['train']['embedding']['hidden_size']} 的值必须为正整数喵！")
+    # train.embedding.max_position_embeddings 字段
+    if not type(copy_dict['train']['embedding']['max_position_embeddings']) is int or copy_dict['train']['embedding']['max_position_embeddings'] <= 0:
+        raise ValueError(f"train.embedding.max_position_embeddings: {copy_dict['train']['embedding']['max_position_embeddings']} 的值必须为正整数喵！")
+    # train.embedding.type_vocab_size 字段
+    if not type(copy_dict['train']['embedding']['type_vocab_size']) is int or copy_dict['train']['embedding']['type_vocab_size'] <= 0:
+        raise ValueError(f"train.embedding.type_vocab_size: {copy_dict['train']['embedding']['type_vocab_size']} 的值必须为正整数喵！")
+    # train.embedding.dropout 字段
+    if not type(copy_dict['train']['embedding']['dropout']) in (int, float) or not 0 <= copy_dict['train']['embedding']['dropout'] < 1:
+        raise ValueError(f"train.embedding.dropout: {copy_dict['train']['embedding']['dropout']} 的值必须为 [0,1) 之间的 int 或 float 喵！")
+    # train.embedding.layer_norm_eps 字段
+    if not type(copy_dict['train']['embedding']['layer_norm_eps']) in (int, float) or copy_dict['train']['embedding']['layer_norm_eps'] <= 0:
+        raise ValueError(f"train.embedding.layer_norm_eps: {copy_dict['train']['embedding']['layer_norm_eps']} 的值必须为大于0的 int 或 float 喵！")
     # train.lr 字段
     if type(copy_dict['train']['lr']) not in (int,float) or copy_dict['train']['lr'] <= 0:
         raise ValueError(f"train.lr: {copy_dict['train']['lr']} 的值必须为正数喵！")
