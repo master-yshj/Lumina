@@ -51,7 +51,7 @@ class Trainer:
             raise ValueError(f"loss必须为Tensor喵! 现在的type为: {type(loss)}")
         if not loss.dim() == 0:
             raise ValueError(f"loss必须为标量型Tensor喵(即0维)! 现在的维度为: {loss.dim()}")
-        if not loss.isfinite():
+        if not isfinite(loss):
             raise ValueError(f"loss出现NaN值或无限值! 训练崩了喵!")
         loss.backward()
         self.optimizer.step()
