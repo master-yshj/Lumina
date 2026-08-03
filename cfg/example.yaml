@@ -233,7 +233,7 @@ test:
 # 设备和后续分布式配置
 cuda:
   # 当前支持 cpu、cuda、cuda:N
-  device: "cpu"                                   # default: cpu
+  device: "cuda"                                   # default: cpu
 
   # 当前最小链路要求为 1
   # DDP 阶段与 torchrun 的 WORLD_SIZE 对齐

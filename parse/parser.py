@@ -178,8 +178,8 @@ try:
                                   SUPPORTED_OPTIMIZERS,
                                   SUPPORTED_SCHEDULERS,)
 
-    import tasks.supported
-    from tasks.supported import (SUPPORTED_TASKS,)
+    import tasks.registry
+    from tasks.registry import (SUPPORTED_TASKS, )
 
     import dataset
     from dataset.supported import (SUPPORTED_DATASET,)
@@ -746,37 +746,37 @@ def validate_config(config_dict):
         raise ValueError(f"config.model.model_path: {model_path} 该目录下并未包含任何文件喵!")
     # model.hidden_size 字段
     hidden_size = copy_dict["model"]["hidden_size"]
-    if not isinstance(hidden_size, int):
+    if not type(hidden_size) is int:
         raise ValueError(f"config.model.hidden_size: {hidden_size} 必须为整型类型的喵! 现在的type: {type(hidden_size)}")
     if hidden_size <= 0:
         raise ValueError(f"config.model.hidden_size: {hidden_size} 必须为正整数喵!")
     # model.max_position_embeddings 字段
     max_position_embeddings = copy_dict["model"]["max_position_embeddings"]
-    if not isinstance(max_position_embeddings, int):
+    if not type(max_position_embeddings) is int:
         raise ValueError(f"config.model.max_position_embeddings: {max_position_embeddings} 必须为整型类型的喵! 现在的type: {type(max_position_embeddings)}")
     if max_position_embeddings <= 0:
         raise ValueError(f"config.model.max_position_embeddings: {max_position_embeddings} 必须为正整数喵!")
     # model.type_vocab_size 字段
     type_vocab_size = copy_dict["model"]["type_vocab_size"]
-    if not isinstance(type_vocab_size, int):
+    if not type(type_vocab_size) is int:
         raise ValueError(f"config.model.type_vocab_size: {type_vocab_size} 必须为整型类型的喵! 现在的type: {type(type_vocab_size)}")
     if type_vocab_size <= 0:
         raise ValueError(f"config.model.type_vocab_size: {type_vocab_size} 必须为正整数喵!")
     # model.num_heads 字段
     num_heads = copy_dict["model"]["num_heads"]
-    if not isinstance(num_heads, int):
+    if not type(num_heads) is int:
         raise ValueError(f"config.model.num_heads: {num_heads} 必须为整型类型的喵! 现在的type: {type(num_heads)}")
-    if type_vocab_size <= 0:
+    if num_heads <= 0:
         raise ValueError(f"config.model.num_heads: {num_heads} 必须为正整数喵!")
     # model.intermediate_size 字段
     intermediate_size = copy_dict["model"]["intermediate_size"]
-    if not isinstance(intermediate_size, int):
+    if not type(intermediate_size) is int:
         raise ValueError(f"config.model.intermediate_size: {intermediate_size} 必须为整型类型的喵! 现在的type: {type(intermediate_size)}")
     if intermediate_size <= 0:
         raise ValueError(f"config.model.intermediate_size: {intermediate_size} 必须为正整数喵!")
     # model.num_layers 字段
     num_layers = copy_dict["model"]["num_layers"]
-    if not isinstance(num_layers, int):
+    if not type(num_layers) is int:
         raise ValueError(f"config.model.num_layers: {num_layers} 必须为整型类型的喵! 现在的type: {type(num_layers)}")
     if num_layers <= 0:
         raise ValueError(f"config.model.num_layers: {num_layers} 必须为正整数喵!")
@@ -798,9 +798,9 @@ def validate_config(config_dict):
         raise ValueError(f"config.model.layer_norm_eps: {layer_norm_eps} 的值必须为有限正数喵!")
     # hidden_size 与 num_heads 的跨字段约束
     if not hidden_size % num_heads == 0:
-        raise ValueError(f"config.model.hidden_size: {hidden_size}"
-                         f"config.model.num_heads: {num_heads}"
-                         f"hidden_size 必须要能够被 num_heads 整除喵!")
+        raise ValueError(f"config.model.hidden_size: {hidden_size}\n"
+                         f"config.model.num_heads: {num_heads}\n"
+                         f"hidden_size 必须要能够被 num_heads 整除喵!\n")
 
     # tokenizer 字段
     # tokenizer.type 字段
@@ -824,7 +824,7 @@ def validate_config(config_dict):
     if vocab_file_path.stat().st_size == 0:
         raise ValueError(f"config.tokenizer.vocab_file_path: {vocab_file_path} 指向的文件大小为0字节的喵!")
     with open(vocab_file_path, "r", encoding="utf-8") as vocab_file:
-        if not any(line for line in vocab_file):
+        if not any(line.strip() for line in vocab_file):
             raise ValueError(f"config.tokenizer.vocab_file_path: {vocab_file_path} 指向的文件为空喵!")
     # tokenizer.do_lower_case 字段
     do_lower_case = copy_dict["tokenizer"]["do_lower_case"]
@@ -836,7 +836,7 @@ def validate_config(config_dict):
         raise ValueError(f"config.tokenizer.strip_accents: {strip_accents} 的值必须为bool类型或者None喵! 当前的type: {type(strip_accents)}")
     # tokenizer.max_input_chars_per_word 字段
     max_input_chars_per_word = copy_dict["tokenizer"]["max_input_chars_per_word"]
-    if not isinstance(max_input_chars_per_word, int) or max_input_chars_per_word <= 0:
+    if not type(max_input_chars_per_word) is int or max_input_chars_per_word <= 0:
         raise ValueError(f"config.tokenizer.max_input_chars_per_word: {max_input_chars_per_word} 的值必须为正整数喵!")
 
     # dataset 字段
@@ -846,7 +846,7 @@ def validate_config(config_dict):
         raise ValueError(f"config.dataset.type: {dataset_type} 必须为字符串类型的喵!")
     if not dataset_type.strip():
         raise ValueError(f"config.dataset.type 不能为空喵!")
-    if not dataset_type in SUPPORTED_DATASET:
+    if not dataset_type.casefold() in SUPPORTED_DATASET:
         raise ValueError(f"config.dataset.type: {dataset_type} 这种数据集类型不受支持喵! 受支持的数据集有: {SUPPORTED_DATASET}")
     # dataset.dataset_path 字段
     dataset_path = copy_dict["dataset"]["dataset_path"]
@@ -873,7 +873,7 @@ def validate_config(config_dict):
     if train_path.stat().st_size == 0:
         raise ValueError(f"config.dataset.train_path: {train_path} 这一路径指向的文件大小为0字节喵!")
     with open(train_path, "r", encoding="utf-8") as train_file:
-        if not any(line for line in train_file):
+        if not any(line.strip() for line in train_file):
             raise ValueError(f"config.dataset.train_path: {train_path} 这一路径指向的文件为空喵!")
     # dataset.valid_path 字段
     valid_path = copy_dict["dataset"]["valid_path"]
@@ -888,7 +888,7 @@ def validate_config(config_dict):
     if valid_path.stat().st_size == 0:
         raise ValueError(f"config.dataset.valid_path: {valid_path} 这一路径指向的文件大小为0字节喵!")
     with open(valid_path, "r", encoding="utf-8") as valid_file:
-        if not any(line for line in valid_file):
+        if not any(line.strip() for line in valid_file):
             raise ValueError(f"config.dataset.valid_path: {valid_path} 这一路径指向的文件为空喵!")
     # dataset.test_path 字段
     test_path = copy_dict["dataset"]["test_path"]
@@ -903,7 +903,7 @@ def validate_config(config_dict):
     if test_path.stat().st_size == 0:
         raise ValueError(f"config.dataset.test_path: {test_path} 这一路径指向的文件大小为0字节喵!")
     with open(test_path, "r", encoding="utf-8") as test_file:
-        if not any(line for line in test_file):
+        if not any(line.strip() for line in test_file):
             raise ValueError(f"config.dataset.test_path: {test_path} 这一路径指向的文件为空喵!")
     # dataset.max_seq_length 字段
     max_seq_length = copy_dict["dataset"]["max_seq_length"]
@@ -911,13 +911,13 @@ def validate_config(config_dict):
         raise ValueError(f"config.dataset.max_seq_length: {max_seq_length} 必须为正整数喵!")
     # dataset.max_seq_length 与 model.max_position_embeddings 的跨字段约束
     if max_seq_length > max_position_embeddings:
-        raise ValueError(f"config.dataset.max_seq_length: {max_seq_length}"
-                         f"config.dataset.max_position_embeddings: {max_position_embeddings}"
-                         f"max_seq_length 的值必须小于等于 max_position_embeddings喵!")
-    # dataset.mlm_drop 字段
-    mlm_drop = copy_dict["dataset"]["mlm_drop"]
-    if not type(mlm_drop) in (int, float) or mlm_drop <= 0 or not isfinite(mlm_drop):
-        raise ValueError(f"config.dataset.mlm_drop: {mlm_drop} 必须为(0,1)之间的数字喵!")
+        raise ValueError(f"config.dataset.max_seq_length: {max_seq_length}\n"
+                         f"config.model.max_position_embeddings: {max_position_embeddings}\n"
+                         f"max_seq_length 的值必须小于等于 max_position_embeddings喵!\n")
+    # dataset.mlm_prob 字段
+    mlm_prob = copy_dict["dataset"]["mlm_prob"]
+    if not type(mlm_prob) in (int, float) or not 0 < mlm_prob < 1 or not isfinite(mlm_prob):
+        raise ValueError(f"config.dataset.mlm_prob: {mlm_prob} 必须为(0,1)之间的数字喵!")
 
     # dataloader 字段
     # dataloader.batch_size 字段
@@ -965,19 +965,17 @@ def validate_config(config_dict):
         # loss.type 字段
         loss_type = copy_loss["type"]
         if not isinstance(loss_type, str):
-            raise ValueError(f"config.loss[{idx}].type: {loss_type} 必须为字符串类型的喵!")
+            raise ValueError(f"config.losses[{idx}].type: {loss_type} 必须为字符串类型的喵!")
         if not loss_type.strip():
             raise ValueError(f"config.losses[{idx}].type 不能为空喵!")
         if not loss_type.strip().casefold() in SUPPORTED_LOSSES:
             raise ValueError(f"config.losses[{idx}].type: {loss_type} 这种类型的损失不受支持喵! 受支持的损失有: {SUPPORTED_LOSSES}")
         # loss.weight 字段
         loss_weight = copy_loss["weight"]
-        if not type(loss_weight) in (int, float) or loss_weight <= 0 or not isfinite(loss_weight):
+        if not type(loss_weight) in (int, float) or loss_weight < 0 or not isfinite(loss_weight):
             raise ValueError(f"config.losses[{idx}].weight: {loss_weight} 的值必须为非负数喵!")
         total_loss_weight += loss_weight
-        if total_loss_weight == 0:
-            raise ValueError(f"config.losses 中的所有loss.weight均为0喵! 无法进行训练喵!")
-        # loss.params 字段, 按type进行硬编码校验
+        # loss.params 子字段, 按type进行硬编码校验
         # losses.crossentropyloss
         if loss_type.strip().casefold() == "crossentropyloss":
             loss_params = copy_loss["params"]
@@ -992,8 +990,9 @@ def validate_config(config_dict):
                 raise ValueError(f"config.losses[{idx}].params.ignore_index 必须为整型的喵! 现在的type: {type(ignore_index)}")
             if task.strip().casefold() == "mlm_pretrain":
                 if ignore_index != -100:
-                    raise ValueError(
-                        f"config.losses[{idx}].params.ignore_index 在特定任务: config.task: {task} 中必须为-100喵!")
+                    raise ValueError(f"config.losses[{idx}].params.ignore_index 在特定任务: config.task: {task} 中必须为-100喵!")
+    if total_loss_weight == 0:
+        raise ValueError(f"config.losses 中的所有loss.weight均为0喵! 无法进行训练喵!")
 
     # optimizer 字段
     # optimizer.type 字段
@@ -1016,8 +1015,8 @@ def validate_config(config_dict):
     betas = copy_dict["optimizer"]["betas"]
     if not isinstance(betas, list):
         raise ValueError(f"config.optimizer.betas: {betas} 必须为list类型的喵!")
-    if len(betas) == 0:
-        raise ValueError(f"config.optimizer.betas 不能为空喵!")
+    if not len(betas) == 2:
+        raise ValueError(f"config.optimizer.betas: {betas} 的长度必须为2喵! 现在的长度: {len(betas)}")
     for idx, beta in enumerate(betas):
         if not type(beta) in (int, float) or not 0 <= beta < 1 or not isfinite(beta):
             raise ValueError(f"config.optimizer.betas[{idx}]: {beta} 的值必须为[0,1)之间的数值喵!")
@@ -1041,8 +1040,8 @@ def validate_config(config_dict):
         raise ValueError(f"config.scheduler.interval: {interval} 必须为字符串类型的喵! 现在的type: {type(interval)}")
     if not interval.strip():
         raise ValueError(f"config.scheduler.interval 不能为空喵!")
-    if not interval.casefold() in ['step', 'epoch', 'plateau']:
-        raise ValueError(f"config.scheduler.interval: {interval} 的值不受支持喵! 受支持的interval有: {['step', 'epoch', 'plateau']}")
+    if not interval.strip().casefold() == 'step':
+        raise ValueError(f"config.scheduler.interval: {interval} 的值不受支持喵! 受支持的interval有: {'step'}")
     # scheduler.step_size 字段
     step_size = copy_dict["scheduler"]["step_size"]
     if not type(step_size) is int or step_size <= 0 or not isfinite(step_size):
@@ -1075,9 +1074,9 @@ def validate_config(config_dict):
         raise ValueError(f"config.train.do_validation: {do_validation} 必须为bool类型的喵!")
     # total_iters 与 log_every_iters 的跨字段约束
     if log_every_iters > total_iters:
-        raise ValueError(f"config.train.total_iters: {total_iters}"
-                         f"config.train.log_every_iters: {log_every_iters}"
-                         f"total_iters 的值必须大于等于 log_every_iters 的值喵!")
+        raise ValueError(f"config.train.total_iters: {total_iters}\n"
+                         f"config.train.log_every_iters: {log_every_iters}\n"
+                         f"total_iters 的值必须大于等于 log_every_iters 的值喵!\n")
 
     # valid 字段
     # valid.valid_every_iters 字段
@@ -1085,10 +1084,11 @@ def validate_config(config_dict):
     if not type(valid_every_iters) is int or valid_every_iters <= 0 or not isfinite(valid_every_iters):
         raise ValueError(f"config.valid.valid_every_iters: {valid_every_iters} 必须为正整数喵!")
     # valid_every_iters 与 total_iters 的跨字段约束
-    if valid_every_iters > total_iters:
-        raise ValueError(f"config.train.total_iters: {total_iters}"
-                         f"config.train.valid_every_iters: {valid_every_iters}"
-                         f"total_iters 的值必须大于 valid_every_iters 喵!")
+    if do_validation:
+        if valid_every_iters > total_iters:
+            raise ValueError(f"config.train.total_iters: {total_iters}\n"
+                             f"config.valid.valid_every_iters: {valid_every_iters}\n"
+                             f"total_iters 的值必须大于 valid_every_iters 喵!\n")
     # valid.early_stop_patience 字段
     early_stop_patience = copy_dict["valid"]["early_stop_patience"]
     if not type(early_stop_patience) is int or early_stop_patience <= 0 or not isfinite(early_stop_patience):
@@ -1119,16 +1119,27 @@ def validate_config(config_dict):
     if not re.fullmatch(device_pattern, cuda_device):
         raise ValueError(f"config.cuda.device: {cuda_device} 只能为cpu,cuda,cuda:N(N为十进制数字) 喵!")
     device_pattern_except_cpu = r'(cuda|cuda:(\d+))$'
-    device_pattern_cuda_n = r'(cuda:n(\d+))$'
+    device_pattern_cuda_n = r'(cuda:(\d+))$'
     if re.fullmatch(device_pattern_except_cpu, cuda_device):
         if not torch.cuda.is_available():
             raise ValueError(f"未检测到本机有可用cuda  喵!")
         if re.fullmatch(device_pattern_cuda_n, cuda_device):
             res = re.match(device_pattern_cuda_n, cuda_device)
-            cuda_n = res.group(2)
+            cuda_n = int(res.group(2))
             if cuda_n >= torch.cuda.device_count():
                 raise ValueError(f"config.cuda.device 中填的数值{cuda_n} 超过了本机实际的cuda数: {torch.cuda.device_count()} 喵!")
     # cuda.gpu_nums 字段
     gpu_nums = copy_dict["cuda"]["gpu_nums"]
     if not type(gpu_nums) is int or gpu_nums <= 0 or not isfinite(gpu_nums):
         raise ValueError(f"config.cuda.gpu_nums: {gpu_nums} 必须为正整数喵!")
+
+def load_config(yaml_path):
+    """
+    加载配置，通过yaml路径读取yaml，创建config，并对其校验
+    :param yaml_path:
+    :return: config_dict:
+    """
+    yaml_dict = load_yaml(yaml_path)
+    config_dict = build_config(yaml_dict, yaml_path)
+    validate_config(config_dict)
+    return config_dict

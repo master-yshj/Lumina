@@ -1,1 +1,0 @@
-SUPPORTED_TOKENIZERS = {'exampletokenizer','qatokenizer'}

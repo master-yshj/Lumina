@@ -3,10 +3,11 @@ import torch
 from math import isfinite
 
 class Trainer:
-    def __init__(self, task, optimizer, device):
+    def __init__(self, task, optimizer, device, scheduler=None):
         self.task = task
         self.optimizer = optimizer
         self.device = torch.device(device)
+        self.scheduler = scheduler
 
         self.task.to(self.device)
 
@@ -55,6 +56,8 @@ class Trainer:
             raise ValueError(f"loss出现NaN值或无限值! 训练崩了喵!")
         loss.backward()
         self.optimizer.step()
+        if self.scheduler is not None:
+            self.scheduler.step()
         detached_loss = outputs["loss"].item()
         new_dict = {"loss": detached_loss}
         return new_dict
@@ -86,7 +89,7 @@ class Trainer:
                 if not "loss" in output_dict:
                     raise ValueError(f"output_dict里面不包含loss的键喵!")
                 loss = output_dict["loss"]
-                if not type(loss) in (float, int) or not loss.isfinite():
+                if not type(loss) in (float, int) or not isfinite(loss):
                     raise ValueError(f"loss必须为有限浮点数或整数喵! 请检查loss是否为nan喵! loss: {loss}")
 
                 total_loss += loss
