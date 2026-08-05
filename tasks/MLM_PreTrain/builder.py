@@ -175,15 +175,50 @@ def build_mlm_pretrain(config_dict, resume=None):
     train_config = config_dict["train"]
     total_iters = train_config["total_iters"]
     log_every_iters = train_config["log_every_iters"]
+    accumulation_steps = train_config["accumulation_steps"]
+    do_validation = train_config["do_validation"]
+
+    # do_validation 为True时接收valid参数，False时为None
+    valid_dataloader = None
+    valid_every_iters = None
+    early_stop_patience = None
+    if do_validation:
+        valid_config = config_dict["valid"]
+        valid_every_iters = valid_config["valid_every_iters"]
+        early_stop_patience = valid_config["early_stop_patience"]
+        validation_rounds_before_save_ckpt = valid_config["validation_rounds_before_save_ckpt"]
+        valid_path = dataset_config["valid_path"]
+        # 实例化dataset
+        valid_dataset = MLMDataset(
+            data_file_path=valid_path,
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+        )
+        # 实例化dataloader
+        valid_dataloader = DataLoader(
+            dataset = valid_dataset,
+            batch_size = batch_size,
+            shuffle = False,
+            num_workers = num_workers,
+            pin_memory = pin_memory,
+            drop_last = False,
+            collate_fn = mlm_collator,
+        )
 
     # 组装参数字典
     train_params_dict = {}
     train_params_dict = {
         "trainer": trainer,
         "train_dataloader": train_dataloader,
+        "valid_dataloader": valid_dataloader,
         "fit_kwargs": {
             "total_iters": total_iters,
             "log_every_iters": log_every_iters,
+            "accumulation_steps": accumulation_steps,
+            "do_validation": do_validation,
+            "valid_every_iters": valid_every_iters,
+            "valid_dataloader": valid_dataloader,
+            "early_stop_patience": early_stop_patience,
         }
     }
 
