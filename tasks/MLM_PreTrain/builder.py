@@ -10,7 +10,7 @@ from Trainer.trainer import Trainer
 
 from torch.utils.data import DataLoader
 
-def build_mlm_pretrain(config_dict, resume=None):
+def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None,):
     # 接收tokenizer参数
     tokenizer_config = config_dict["tokenizer"]
     tokenizer_type = tokenizer_config["type"].strip().casefold()
@@ -211,6 +211,7 @@ def build_mlm_pretrain(config_dict, resume=None):
         "trainer": trainer,
         "train_dataloader": train_dataloader,
         "valid_dataloader": valid_dataloader,
+        "experiment_paths": experiment_paths,
         "fit_kwargs": {
             "total_iters": total_iters,
             "log_every_iters": log_every_iters,
@@ -221,5 +222,11 @@ def build_mlm_pretrain(config_dict, resume=None):
             "early_stop_patience": early_stop_patience,
         }
     }
+
+    if do_validation:
+        checkpoints_dir = experiment_paths["checkpoints_dir"]
+        train_params_dict["fit_kwargs"]["validation_rounds_before_save_ckpt"] = validation_rounds_before_save_ckpt
+        train_params_dict["fit_kwargs"]["checkpoints_dir"] = checkpoints_dir
+
 
     return train_params_dict

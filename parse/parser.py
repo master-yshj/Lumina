@@ -1143,3 +1143,28 @@ def load_config(yaml_path):
     config_dict = build_config(yaml_dict, yaml_path)
     validate_config(config_dict)
     return config_dict
+
+def normalize_resume_path(resume):
+    """
+    将控制台传入的resume参数规范化
+    :param resume: resume参数，模型开始训练的ckpt保存的pt文件
+    :return:
+    """
+    if resume is None:
+        return None
+    if not type(resume) in (str, pathlib.Path):
+        raise ValueError(f"resume 必须为字符串类型或 pathlib.Path 类型的喵! 现在的type: {type(resume)}")
+    if isinstance(resume, str):
+        if not resume.strip():
+            raise ValueError(f"resume 为字符串类型时不能为空喵!")
+    resume_path = pathlib.Path(resume).resolve()
+    if not resume_path.exists():
+        raise ValueError(F"resume_path: {resume_path} 指向的路径不存在喵!")
+    if not resume_path.is_file():
+        raise ValueError(f"resume_path: {resume_path} 必须指向文件喵!")
+    if resume_path.suffix.casefold() == ".pt":
+        return resume_path
+    else:
+        raise ValueError(f"resume_path: {resume_path} 必须指向pt类型文件喵!")
+
+

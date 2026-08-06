@@ -1,9 +1,11 @@
 import torch
-
+import pathlib
 from math import isfinite
 
+from Trainer.checkpoint import build_checkpoint, save_checkpoint
+
 class Trainer:
-    def __init__(self, task, optimizer, device, scheduler=None):
+    def __init__(self, task, optimizer, device, scheduler=None,):
         self.task = task
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -156,7 +158,7 @@ class Trainer:
         return summary_dict
 
 
-    def fit(self, train_dataloader, total_iters, log_every_iters=100, accumulation_steps=1, valid_dataloader=None, do_validation=False, valid_every_iters=None, early_stop_patience=None ):
+    def fit(self, train_dataloader, total_iters, log_every_iters=100, accumulation_steps=1, valid_dataloader=None, do_validation=False, valid_every_iters=None, early_stop_patience=None, validation_rounds_before_save_ckpt=None, checkpoints_dir = None ):
         """
         fit方法负责不断从dataloader中取出数据，并调用train_step方法
         :param train_dataloader: 训练数据加载器
@@ -167,6 +169,8 @@ class Trainer:
         :param do_validation: 是否进行验证
         :param valid_every_iters: 每隔多少步验证一次
         :param early_stop_patience: 早停的patience
+        :param validation_rounds_before_save_ckpt: 每验证多少轮保存一次检查点
+        :param checkpoints_dir: ckpt检查点保存路径
         :return: summary_dict = {
                             "completed_iters": self.global_step,
                             "global_step": self.global_step,
@@ -178,6 +182,7 @@ class Trainer:
                             "best_validation_loss": self.best_validation_loss,
                             "validation_rounds_without_improvement": self.validation_rounds_without_improvement,
                             "early_stopped": early_stopped,
+                            "validation_rounds_before_save_ckpt": validation_rounds_before_save_ckpt,
                         }
         """
         if not type(total_iters) is int or total_iters <= 0:
@@ -195,6 +200,26 @@ class Trainer:
                 raise ValueError(f"valid_every_iters必须为正整数喵! 现在是: {valid_every_iters}")
             if not type(early_stop_patience) is int or early_stop_patience <= 0:
                 raise ValueError(f"early_stop_patience必须为正整数喵! 现在是: {early_stop_patience}")
+        if checkpoints_dir is None and validation_rounds_before_save_ckpt is None:
+            save_ckpt = False
+        elif checkpoints_dir is None and validation_rounds_before_save_ckpt is not None:
+                raise ValueError(f"checkpoints_dir 和 validation_rounds_before_save_ckpt 不能一个为空一个不为空喵!")
+        elif checkpoints_dir is not None and validation_rounds_before_save_ckpt is None:
+                raise ValueError(f"checkpoints_dir 和 validation_rounds_before_save_ckpt 不能一个为空一个不为空喵!")
+        else:
+            if not type(checkpoints_dir) in (str, pathlib.Path):
+                raise ValueError(f"checkpoints_dir 必须为字符串类型或者pathlib.Path类型的喵! 现在的type: {type(checkpoints_dir)}")
+            if isinstance(checkpoints_dir, str):
+                if not checkpoints_dir.strip():
+                    raise ValueError(f"当 checkpoints_dir 为字符串类型时不能为空喵!")
+            checkpoints_dir = pathlib.Path(checkpoints_dir)
+            if not checkpoints_dir.exists():
+                raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的路径不存在喵!")
+            if not checkpoints_dir.is_dir():
+                raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的必须为目录喵!")
+            if not type(validation_rounds_before_save_ckpt) is int or validation_rounds_before_save_ckpt <= 0:
+                raise ValueError(f"validation_rounds_before_save_ckpt: {validation_rounds_before_save_ckpt} 必须为正整数喵!")
+            save_ckpt = True
 
         total_loss = 0.0                            # 总损失
         last_loss = None                            # 上轮损失
@@ -251,10 +276,29 @@ class Trainer:
                         if self.best_validation_loss is None or current_validation_loss < self.best_validation_loss:
                             self.best_validation_loss = current_validation_loss
                             self.validation_rounds_without_improvement = 0
+                            if save_ckpt:
+                                state_dict = build_checkpoint(
+                                    task=self.task,
+                                    optimizer=self.optimizer,
+                                    scheduler=self.scheduler,
+                                    trainer=self,
+                                )
+                                best_checkpoint_path = checkpoints_dir / "best.pt"
+                                save_checkpoint(state_dict, best_checkpoint_path)
                         else:
                             self.validation_rounds_without_improvement += 1
                         if self.validation_rounds_without_improvement >= early_stop_patience:
                             early_stopped = True
+
+                        if save_ckpt and self.completed_validations % validation_rounds_before_save_ckpt == 0:
+                            state_dict = build_checkpoint(
+                                task=self.task,
+                                optimizer=self.optimizer,
+                                scheduler=self.scheduler,
+                                trainer=self,
+                            )
+                            last_checkpoint_path = checkpoints_dir / "last.pt"
+                            save_checkpoint(state_dict, last_checkpoint_path)
 
                 if self.global_step >= total_iters:
                     break
@@ -263,6 +307,16 @@ class Trainer:
 
             if not batch_exist:
                 raise ValueError(f"训练出现异常喵! dataloader为空喵! ")
+
+        if save_ckpt:
+            state_dict = build_checkpoint(
+                task=self.task,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+                trainer=self,
+            )
+            last_checkpoint_path = checkpoints_dir / "last.pt"
+            save_checkpoint(state_dict, last_checkpoint_path)
 
         if not self.global_step % log_every_iters == 0:
             print(f"iters: {self.global_step}/{total_iters}, loss: {loss}, avg_loss: {avg_loss}")
