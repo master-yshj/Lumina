@@ -5,11 +5,12 @@ from math import isfinite
 from Trainer.checkpoint import build_checkpoint, save_checkpoint
 
 class Trainer:
-    def __init__(self, task, optimizer, device, scheduler=None,):
+    def __init__(self, task, optimizer, device, scheduler=None, logger=None):
         self.task = task
         self.optimizer = optimizer
         self.device = torch.device(device)
         self.scheduler = scheduler
+        self.logger = logger
 
         self.task.to(self.device)
 
@@ -32,6 +33,12 @@ class Trainer:
             else:
                 new_batch[k] = v
         return new_batch
+
+    def _log_info(self, message):
+        if self.logger is None:
+            print(message)
+        else:
+            self.logger.info(message)
 
     def train_step(self, batch, should_zero_grad, should_update, loss_divisor):
         """
@@ -145,7 +152,7 @@ class Trainer:
             last_loss = loss
             avg_loss = total_loss / completed_batches
 
-            print(f"completed_batches: {completed_batches}/{batch_num}, loss: {loss}, avg_loss: {avg_loss}")
+            self._log_info(f"batch={completed_batches}/{batch_num}, loss={loss:.6f}, avg_loss={avg_loss:.6f}")
 
         if completed_batches == 0:
             raise ValueError(f"valid_dataloader是空的喵!")
@@ -155,6 +162,7 @@ class Trainer:
             "last_loss": last_loss,
             "avg_loss": avg_loss,
         }
+        self._log_info(f"batches={completed_batches}, avg_loss={avg_loss:.6f}")
         return summary_dict
 
 
@@ -267,7 +275,8 @@ class Trainer:
                     accumulated_batches = 0
 
                     if self.global_step % log_every_iters == 0:
-                        print(f"iters: {self.global_step}, loss: {loss}, avg_loss: {avg_loss}")
+                        progress = self.global_step / total_iters * 100
+                        self._log_info(f"iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
 
                     if do_validation and self.global_step % valid_every_iters == 0:
                         last_validation_summary = self.validate(valid_dataloader)
@@ -285,10 +294,14 @@ class Trainer:
                                 )
                                 best_checkpoint_path = checkpoints_dir / "best.pt"
                                 save_checkpoint(state_dict, best_checkpoint_path)
+                                progress = self.global_step / total_iters * 100
+                                self._log_info(f"checkpoint: best.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
                         else:
                             self.validation_rounds_without_improvement += 1
                         if self.validation_rounds_without_improvement >= early_stop_patience:
                             early_stopped = True
+                            progress = self.global_step / total_iters * 100
+                            self._log_info(f"early_stopped, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
 
                         if save_ckpt and self.completed_validations % validation_rounds_before_save_ckpt == 0:
                             state_dict = build_checkpoint(
@@ -299,6 +312,8 @@ class Trainer:
                             )
                             last_checkpoint_path = checkpoints_dir / "last.pt"
                             save_checkpoint(state_dict, last_checkpoint_path)
+                            progress = self.global_step / total_iters * 100
+                            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
 
                 if self.global_step >= total_iters:
                     break
@@ -317,9 +332,12 @@ class Trainer:
             )
             last_checkpoint_path = checkpoints_dir / "last.pt"
             save_checkpoint(state_dict, last_checkpoint_path)
+            progress = self.global_step / total_iters * 100
+            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
 
         if not self.global_step % log_every_iters == 0:
-            print(f"iters: {self.global_step}/{total_iters}, loss: {loss}, avg_loss: {avg_loss}")
+            progress = self.global_step / total_iters * 100
+            self._log_info(f"iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}")
 
         summary_dict = {
                             "completed_iters": self.global_step,

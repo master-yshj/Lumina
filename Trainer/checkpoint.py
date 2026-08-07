@@ -105,7 +105,6 @@ def load_checkpoint_state(checkpoint, task, optimizer, scheduler, trainer):
         if not isinstance(scheduler_state, dict):
             raise ValueError(f"scheduler_state 不为空时必须为dict类型的喵! 现在的type: {type(scheduler_state)}")
 
-
     task.load_state_dict(task_state, strict=True)
     optimizer.load_state_dict(optimizer_state)
     if scheduler is not None:

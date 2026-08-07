@@ -7,10 +7,11 @@ from tasks.MLM_PreTrain.mlm import MLMTask
 from models.Transformer.optimizer.registry import OPTIMIZER_REGISTRY
 from models.Transformer.scheduler.registry import SCHEDULER_REGISTRY
 from Trainer.trainer import Trainer
+from Trainer.checkpoint import load_checkpoint, load_checkpoint_state
 
 from torch.utils.data import DataLoader
 
-def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None,):
+def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None, logger=None):
     # 接收tokenizer参数
     tokenizer_config = config_dict["tokenizer"]
     tokenizer_type = tokenizer_config["type"].strip().casefold()
@@ -163,20 +164,36 @@ def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None,):
     cuda_device = cuda_config["device"]
     gpu_nums = cuda_config["gpu_nums"]
 
-    # 实例化trainer
-    trainer = Trainer(
-        optimizer=optimizer,
-        scheduler=scheduler,
-        device=cuda_device,
-        task=mlm_task,
-    )
-
     # 接收train参数
     train_config = config_dict["train"]
     total_iters = train_config["total_iters"]
     log_every_iters = train_config["log_every_iters"]
     accumulation_steps = train_config["accumulation_steps"]
     do_validation = train_config["do_validation"]
+
+    # 实例化trainer
+    trainer = Trainer(
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=cuda_device,
+        task=mlm_task,
+        logger=logger,
+    )
+
+    if resume is not None:
+        checkpoint = load_checkpoint(resume)
+        load_checkpoint_state(
+            checkpoint=checkpoint,
+            task=mlm_task,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            trainer=trainer,
+        )
+        if total_iters <= trainer.global_step:
+            raise ValueError(f"resume_path: {resume}"
+                             f"total_iters: {total_iters}"
+                             f"trainer.global_step: {trainer.global_step}"
+                             f"total_iters 必须大于 trainer.global_step 喵!")
 
     # do_validation 为True时接收valid参数，False时为None
     valid_dataloader = None

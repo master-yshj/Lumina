@@ -98,7 +98,7 @@ def save_config_snapshot(config_dict, config_dir):
         raise ValueError(f"config_dict 必须为dict类型的喵! 现在的type: {type(config_dict)}")
     if not config_dict:
         raise ValueError(f"config_dict 不能为空喵!")
-    if not type(config_dir) in (str, pathlib.Path):
+    if not isinstance(config_dir, (str, pathlib.Path)):
         raise ValueError(f"config_dir: {config_dir} 必须为字符串类型或者pathlib.Path类型的喵! 现在的type: {type(config_dir)}")
     if isinstance(config_dir, str):
         if not config_dir.strip():
@@ -114,3 +114,44 @@ def save_config_snapshot(config_dict, config_dir):
     with open(save_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(new_dict, f, allow_unicode=True)
     return save_path
+
+def resolve_resume_experiment_paths(resume_path):
+    """
+    根据resume_path组装experiment_pathes
+    :param resume_path: 规范后的resume路径
+    :return: experiment_paths
+    """
+    # 获取现有目录，组装已有的experiment_paths
+    experiment_paths = {}
+    checkpoints_dir = resume_path.parent
+    experiment_dir = checkpoints_dir.parent
+    if not checkpoints_dir.name == "checkpoints":
+        raise ValueError(f"checkpoints_dir: {checkpoints_dir} 必须指向一个叫 checkpoints 的文件夹喵!")
+    if not experiment_dir.exists() or not experiment_dir.is_dir():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须存在且必须指向一个目录喵!")
+    experiment_paths["checkpoints_dir"] = checkpoints_dir
+    experiment_paths["experiment_dir"] = experiment_dir
+
+    config_dir = experiment_dir / "config"
+    logs_dir = experiment_dir / "logs"
+    metrics_dir = experiment_dir / "metrics"
+    figures_dir = experiment_dir / "figures"
+    if not config_dir.exists() or not config_dir.is_dir():
+        raise ValueError(f"config_dir: {config_dir} 必须存在且必须为目录喵!")
+    if not logs_dir.exists() or not logs_dir.is_dir():
+        raise ValueError(f"logs_dir: {logs_dir} 必须存在且必须为目录喵!")
+    if not metrics_dir.exists() or not metrics_dir.is_dir():
+        raise ValueError(f"metrics_dir: {metrics_dir} 必须存在且必须为目录喵!")
+    if not figures_dir.exists() or not figures_dir.is_dir():
+        raise ValueError(f"figures_dir: {figures_dir} 必须存在且必须为目录喵!")
+    experiment_paths["config_dir"] = config_dir
+    experiment_paths["logs_dir"] = logs_dir
+    experiment_paths["metrics_dir"] = metrics_dir
+    experiment_paths["figures_dir"] = figures_dir
+
+    config_snapshot_path = config_dir / "config.yaml"
+    if not config_snapshot_path.exists() or not config_snapshot_path.is_file():
+        raise ValueError(f"config_snapshot_path: {config_snapshot_path} 必须存在且必须为文件喵!")
+    experiment_paths["config_snapshot_path"] = config_snapshot_path
+
+    return experiment_paths
