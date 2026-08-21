@@ -84,12 +84,12 @@ model:
 
   # TinyBertForMaskedLM 构造参数
   # vocab_size 与 padding_idx 由 Tokenizer 提供
-  hidden_size: 128                                # default: 128
+  hidden_size: 256                                # default: 128
   max_position_embeddings: 128                    # default: 128
   type_vocab_size: 2                              # default: 2
-  num_heads: 4                                    # default: 4
-  intermediate_size: 512                          # default: 512
-  num_layers: 2                                   # default: 2
+  num_heads: 8                                    # default: 4
+  intermediate_size: 1024                          # default: 512
+  num_layers: 16                                   # default: 2
   embedding_dropout: 0.1                          # default: 0.1
   attention_dropout: 0.1                          # default: 0.1
   hidden_dropout: 0.1                             # default: 0.1
@@ -195,7 +195,7 @@ scheduler:
 # 训练配置
 train:
   # Optimizer 实际更新次数，即目标 global_step
-  total_iters: 10000                              # default: 10000
+  total_iters: 50000                              # default: 10000
 
   # 累积多少个 Micro Batch 后更新一次参数
   accumulation_steps: 1                           # default: 1
@@ -238,3 +238,15 @@ cuda:
   # 当前最小链路要求为 1
   # DDP 阶段与 torchrun 的 WORLD_SIZE 对齐
   gpu_nums: 1                                     # default: 1
+
+# 指标相关配置
+metrics:
+  train:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100
+
+  valid:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100

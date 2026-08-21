@@ -137,7 +137,7 @@ def save_checkpoint(checkpoint, checkpoint_path):
     if extra_keys:
         raise ValueError(f"checkpoint 中多出了其他字段喵: {extra_keys}")
 
-    if not type(checkpoint_path) in (str, pathlib.Path):
+    if not isinstance(checkpoint_path, (str, pathlib.Path)):
         raise ValueError(f"checkpoint_path 必须为pathlib.Path类型或字符串类型的喵! 现在的type: {type(checkpoint_path)}")
     if isinstance(checkpoint_path, str):
         if not checkpoint_path.strip():

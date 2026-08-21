@@ -51,5 +51,6 @@ class MLMTask(nn.Module):
         logits = logits.reshape(batch_size*seq_length, num_classes)
         labels = labels.reshape(batch_size*seq_length)
         loss = self.loss_fn(logits=logits, labels=labels)
-        output_dict["loss"] = loss
+        output_dict["loss"] = loss["loss"]
+        output_dict["losses"] = loss["losses"]
         return output_dict

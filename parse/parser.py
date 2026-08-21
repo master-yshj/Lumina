@@ -81,6 +81,13 @@ LOSS_ITEM_CUSTOM_DICT = {
     "params": {},
 }
 
+METRIC_ITEM_CUSTOM_DICT = {
+    "type": "REQUIRED",
+    "params": {
+        "ignore_index": -100,
+    },
+}
+
 CUSTOM_DICT = {
     "name": "REQUIRED",
     "seed": 42,
@@ -157,6 +164,14 @@ CUSTOM_DICT = {
     "cuda": {
         "device": "cpu",
         "gpu_nums": 1,
+    },
+    "metrics": {
+        "train": [
+            METRIC_ITEM_CUSTOM_DICT,
+        ],
+        "valid": [
+            METRIC_ITEM_CUSTOM_DICT,
+        ]
     }
 }
 
@@ -183,6 +198,9 @@ try:
 
     import dataset
     from dataset.supported import (SUPPORTED_DATASET,)
+
+    import metrics
+    from metrics.registry import (SUPPORTED_METRICS, )
 
 finally:
     if ROOT_STR in sys.path:
@@ -1115,7 +1133,7 @@ def validate_config(config_dict):
         raise ValueError(f"config.cuda.device: {cuda_device} 必须为字符串类型的喵!")
     if not cuda_device.strip():
         raise ValueError(f"config.cuda.device 不能为空喵!")
-    device_pattern = r'(cpu|cuda|cuda:\d+)$'
+    device_pattern = r'(cpu|mps|cuda|cuda:\d+)$'
     if not re.fullmatch(device_pattern, cuda_device):
         raise ValueError(f"config.cuda.device: {cuda_device} 只能为cpu,cuda,cuda:N(N为十进制数字) 喵!")
     device_pattern_except_cpu = r'(cuda|cuda:(\d+))$'
@@ -1132,6 +1150,83 @@ def validate_config(config_dict):
     gpu_nums = copy_dict["cuda"]["gpu_nums"]
     if not type(gpu_nums) is int or gpu_nums <= 0 or not isfinite(gpu_nums):
         raise ValueError(f"config.cuda.gpu_nums: {gpu_nums} 必须为正整数喵!")
+
+    # metrics 字段
+    # metrics.train 字段
+    metrics_train = copy_dict["metrics"]["train"]
+    if not isinstance(metrics_train, list):
+        raise ValueError(f"config.metrics.train: {metrics_train} 必须为list类型的喵! 现在的type: {type(metrics_train)}")
+    if not metrics_train:
+        raise ValueError(f"config.metrics.train 不能为空喵!")
+    for idx, metric in enumerate(metrics_train):
+        if not isinstance(metric, dict):
+            raise ValueError(f"config.metrics.train[{idx}]: {metric} 必须为dict类型的喵! 现在的type: {type(metric)}")
+        if not metric:
+            raise ValueError(f"config.metrics.train[{idx}] 不能为空喵!")
+        if "type" not in metric:
+            raise ValueError(f"config.metrics.train[{idx}]: {metric} 缺少了type字段喵!")
+        metric_type = metric["type"]
+        if not isinstance(metric_type, str):
+            raise ValueError(f"config.metrics.train[{idx}].type: {metric_type} 必须为字符串类型的喵! 现在的type: {type(metric_type)}")
+        if not metric_type.strip():
+            raise ValueError(f"config.metrics.train[{idx}].type 不能为空喵!")
+        if metric_type.strip().casefold() not in SUPPORTED_METRICS:
+            raise ValueError(f"config.metrics.train[{idx}].type: {metric_type} 这一metric类型不受支持喵! 受支持的metrics: {SUPPORTED_METRICS}")
+        if "params" not in metric:
+            raise ValueError(f"config.metrics.train[{idx}]: {metric} 缺少了params字段喵!")
+        metric_params = metric["params"]
+        if not isinstance(metric_params, dict):
+            raise ValueError(f"config.metrics.train[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
+        if not metric_params:
+            raise ValueError(f"config.metrics.train[{idx}].params 不能为空喵!")
+        # 根据metric的type进行硬编码校验
+        # TokenAccuracy
+        if metric_type.strip().casefold() == "tokenaccuracy":
+            if "ignore_index" not in metric_params:
+                raise ValueError(f"token_accuracy这一metric的params必须包含ignore_index字段喵!")
+            ignore_index = metric_params["ignore_index"]
+            if not type(ignore_index) is int:
+                raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
+            if not ignore_index == -100:
+                raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+    # metrics.valid 字段
+    metrics_valid = copy_dict["metrics"]["valid"]
+    if not isinstance(metrics_valid, list):
+        raise ValueError(f"config.metrics.valid: {metrics_valid} 必须为list类型的喵! 现在的type: {type(metrics_valid)}")
+    if not metrics_valid:
+        raise ValueError(f"config.metrics.valid 不能为空喵!")
+    for idx, metric in enumerate(metrics_valid):
+        if not isinstance(metric, dict):
+            raise ValueError(f"config.metrics.valid[{idx}]: {metric} 必须为dict类型的喵! 现在的type: {type(metric)}")
+        if not metric:
+            raise ValueError(f"config.metrics.valid[{idx}] 不能为空喵!")
+        if "type" not in metric:
+            raise ValueError(f"config.metrics.valid[{idx}]: {metric} 缺少了type字段喵!")
+        metric_type = metric["type"]
+        if not isinstance(metric_type, str):
+            raise ValueError(f"config.metrics.valid[{idx}].type: {metric_type} 必须为字符串类型的喵! 现在的type: {type(metric_type)}")
+        if not metric_type.strip():
+            raise ValueError(f"config.metrics.valid[{idx}].type 不能为空喵!")
+        if metric_type.strip().casefold() not in SUPPORTED_METRICS:
+            raise ValueError(f"config.metrics.valid[{idx}].type: {metric_type} 这一metric类型不受支持喵! 受支持的metrics: {SUPPORTED_METRICS}")
+        if "params" not in metric:
+            raise ValueError(f"config.metrics.valid[{idx}]: {metric} 缺少了params字段喵!")
+        metric_params = metric["params"]
+        if not isinstance(metric_params, dict):
+            raise ValueError(f"config.metrics.valid[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
+        if not metric_params:
+            raise ValueError(f"config.metrics.valid[{idx}].params 不能为空喵!")
+        # 根据metric的type进行硬编码校验
+        # TokenAccuracy
+        if metric_type.strip().casefold() == "tokenaccuracy":
+            if "ignore_index" not in metric_params:
+                raise ValueError(f"token_accuracy这一metric的params必须包含ignore_index字段喵!")
+            ignore_index = metric_params["ignore_index"]
+            if not type(ignore_index) is int:
+                raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
+            if not ignore_index == -100:
+                raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+
 
 def load_config(yaml_path):
     """

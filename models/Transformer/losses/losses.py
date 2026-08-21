@@ -109,8 +109,17 @@ class WeightedLoss(nn.Module):
 
     def forward(self, logits, labels):
         total_loss = 0.0
+        loss_dict = {}
+        loss_dict["losses"] = {}
         for name, loss_fn in self.loss_fns.items():
             weight = self.weights[name]
             loss = loss_fn(logits=logits, labels=labels)
-            total_loss += loss * weight
-        return total_loss
+            weighted = loss * weight
+            total_loss += weighted
+            loss_dict["losses"][name] = {
+                "raw": loss,
+                "weight": weight,
+                "weighted": weighted,
+            }
+        loss_dict["loss"] = total_loss
+        return loss_dict

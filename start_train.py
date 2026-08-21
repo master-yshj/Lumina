@@ -6,6 +6,8 @@ from parse.parser import parse_args, load_config, normalize_resume_path
 from tasks.registry import TASK_BUILDER_REGISTRY
 from experiments import create_experiments_directories, save_config_snapshot, resolve_resume_experiment_paths
 from logger.logger import RunLogger
+from metrics.plotter import plot_csv_metrics
+from device import check_device, get_memory_summary
 
 def main():
     args = parse_args()
@@ -45,6 +47,12 @@ def main():
 
     logger.info("开始设置随机种子了喵~")
 
+    device = config_dict["cuda"]["device"]
+    gpu_nums = config_dict["cuda"]["gpu_nums"]
+    device_summary = check_device(device, gpu_nums)
+
+    logger.info(f"当前设备信息: {device_summary}")
+
     # 设置种子
     seed = config_dict["seed"]
     random.seed(seed)
@@ -59,11 +67,18 @@ def main():
         resume=resume_path,
         experiment_paths=experiment_paths,
         logger=logger,
+        device_summary=device_summary,
     )
     trainer = task_components["trainer"]
     train_dataloader = task_components["train_dataloader"]
     fit_kwargs = task_components["fit_kwargs"]
     train_summary = trainer.fit(train_dataloader, **fit_kwargs)
+
+    figures_dir = experiment_paths["figures_dir"]
+    train_metrics_path = task_components["train_metrics_path"]
+    valid_metrics_path = task_components["valid_metrics_path"]
+    plot_csv_metrics(train_metrics_path, figures_dir)
+    plot_csv_metrics(valid_metrics_path, figures_dir)
 
     logger.finish(train_summary)
 

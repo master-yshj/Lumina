@@ -6,12 +6,15 @@ from models.Transformer.losses.losses import WeightedLoss
 from tasks.MLM_PreTrain.mlm import MLMTask
 from models.Transformer.optimizer.registry import OPTIMIZER_REGISTRY
 from models.Transformer.scheduler.registry import SCHEDULER_REGISTRY
+from metrics.registry import METRIC_REGISTRY
+from metrics.collection import MetricCollection
+from metrics.writer import MetricWriter
 from Trainer.trainer import Trainer
 from Trainer.checkpoint import load_checkpoint, load_checkpoint_state
 
 from torch.utils.data import DataLoader
 
-def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None, logger=None):
+def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_paths=None, logger=None):
     # 接收tokenizer参数
     tokenizer_config = config_dict["tokenizer"]
     tokenizer_type = tokenizer_config["type"].strip().casefold()
@@ -117,6 +120,53 @@ def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None, logger=N
     # 实例化WeightedLoss
     loss_fn = WeightedLoss(loss_list)
 
+    # 接收metrics字段
+    metrics_config = config_dict["metrics"]
+    train_metrics_config = metrics_config["train"]
+    train_metric_list = []
+    for train_metric in train_metrics_config:
+        train_metric_type = train_metric["type"].strip().casefold()
+        train_metric_params = train_metric["params"]
+        train_metric_class = METRIC_REGISTRY[train_metric_type]
+        train_metric_list.append(train_metric_class(**train_metric_params))
+    train_metric_collection = MetricCollection(train_metric_list)
+    valid_metrics_config = metrics_config["valid"]
+    valid_metric_list = []
+    for valid_metric in valid_metrics_config:
+        valid_metric_type = valid_metric["type"].strip().casefold()
+        valid_metric_params = valid_metric["params"]
+        valid_metric_class = METRIC_REGISTRY[valid_metric_type]
+        valid_metric_list.append(valid_metric_class(**valid_metric_params))
+    valid_metric_collection = MetricCollection(valid_metric_list)
+
+    # 构建metric的csv文件保存配置
+    metrics_dir = experiment_paths["metrics_dir"]
+    train_metrics_path = metrics_dir / "train_metrics.csv"
+    valid_metrics_path = metrics_dir / "valid_metrics.csv"
+
+    base_fieldnames = ["global_step"]
+    loss_fieldnames = ["avg_loss"]
+    for loss_dict in loss_list:
+        loss_name = loss_dict["name"]
+        loss_fieldnames.append(f"{loss_name}_avg_raw")
+        loss_fieldnames.append(f"{loss_name}_avg_weighted_loss")
+    interval_loss_fieldnames = ["interval_avg_loss"]
+    for loss_dict in loss_list:
+        loss_name = loss_dict["name"]
+        interval_loss_fieldnames.append(f"{loss_name}_interval_avg_raw")
+        interval_loss_fieldnames.append(f"{loss_name}_interval_avg_weighted_loss")
+    train_metric_fieldnames = []
+    for metric in train_metric_list:
+        train_metric_fieldnames.extend(metric.output_fields())
+    valid_metric_fieldnames = []
+    for metric in valid_metric_list:
+        valid_metric_fieldnames.extend(metric.output_fields())
+    train_fieldnames = base_fieldnames + loss_fieldnames + interval_loss_fieldnames + train_metric_fieldnames
+    valid_fieldnames = base_fieldnames + loss_fieldnames + valid_metric_fieldnames
+    train_metrics_writer = MetricWriter(train_metrics_path, train_fieldnames)
+    valid_metrics_writer = MetricWriter(valid_metrics_path, valid_fieldnames)
+
+
     # 实例化task
     mlm_task = MLMTask(
         model=model,
@@ -176,8 +226,13 @@ def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None, logger=N
         optimizer=optimizer,
         scheduler=scheduler,
         device=cuda_device,
+        device_summary=device_summary,
         task=mlm_task,
         logger=logger,
+        train_metric_collection=train_metric_collection,
+        valid_metric_collection=valid_metric_collection,
+        train_metrics_writer=train_metrics_writer,
+        valid_metrics_writer=valid_metrics_writer
     )
 
     if resume is not None:
@@ -229,6 +284,12 @@ def build_mlm_pretrain(config_dict, resume=None, experiment_paths=None, logger=N
         "train_dataloader": train_dataloader,
         "valid_dataloader": valid_dataloader,
         "experiment_paths": experiment_paths,
+        "train_metric_collection": train_metric_collection,
+        "valid_metric_collection": valid_metric_collection,
+        "train_metrics_writer": train_metrics_writer,
+        "valid_metrics_writer": valid_metrics_writer,
+        "train_metrics_path": train_metrics_path,
+        "valid_metrics_path": valid_metrics_path,
         "fit_kwargs": {
             "total_iters": total_iters,
             "log_every_iters": log_every_iters,
