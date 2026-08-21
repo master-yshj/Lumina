@@ -1,0 +1,84 @@
+cuda:
+  device: cuda
+  gpu_nums: 1
+dataloader:
+  batch_size: 8
+  drop_last: false
+  num_workers: 0
+  pin_memory: false
+  shuffle: true
+dataset:
+  dataset_path: /home/hzy/NLP/main/dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+  max_seq_length: 128
+  mlm_prob: 0.15
+  test_path: /home/hzy/NLP/main/dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_test.jsonl
+  train_path: /home/hzy/NLP/main/dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_train.jsonl
+  type: tiny_zhwiki
+  valid_path: /home/hzy/NLP/main/dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_val.jsonl
+losses:
+- name: mlm_cross_entropy
+  params:
+    ignore_index: -100
+  type: CrossEntropyLoss
+  weight: 1.0
+metrics:
+  test:
+  - params:
+      ignore_index: -100
+    type: TokenAccuracy
+  train:
+  - params:
+      ignore_index: -100
+    type: TokenAccuracy
+  valid:
+  - params:
+      ignore_index: -100
+    type: TokenAccuracy
+model:
+  attention_dropout: 0.1
+  embedding_dropout: 0.1
+  hidden_dropout: 0.1
+  hidden_size: 128
+  intermediate_size: 512
+  layer_norm_eps: 1.0e-12
+  max_position_embeddings: 128
+  model_path: /home/hzy/NLP/main/models/Transformer
+  name: TinyBertForMaskedLM
+  num_heads: 4
+  num_layers: 2
+  type: Transformer
+  type_vocab_size: 2
+name: TinyBert_MLM_PreTrain
+optimizer:
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  lr: 0.001
+  type: AdamW
+  weight_decay: 0.01
+scheduler:
+  gamma: 0.1
+  interval: step
+  last_epoch: -1
+  step_size: 1000
+  type: StepLR
+seed: 42
+task: MLM_PreTrain
+test:
+  enabled: true
+tokenizer:
+  do_lower_case: true
+  max_input_chars_per_word: 100
+  strip_accents: null
+  type: ExampleTokenizer
+  vocab_file_path: /home/hzy/NLP/main/tokenizer/bert_base_chinese_tokenizer/vocab.txt
+train:
+  accumulation_steps: 1
+  do_validation: true
+  log_every_iters: 100
+  total_iters: 10000
+valid:
+  early_stop_patience: 10
+  valid_every_iters: 500
+  validation_rounds_before_save_ckpt: 1

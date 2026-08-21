@@ -1,0 +1,2 @@
+global_step,avg_loss,mlm_cross_entropy_avg_raw,mlm_cross_entropy_avg_weighted_loss,token_accuracy
+1,8.282200418199812,8.282200418199812,8.282200418199812,0.03542892720022532

@@ -158,7 +158,7 @@ def load_checkpoint(checkpoint_path, map_location="cpu"):
     :param map_location:
     :return: checkpoint: dict 加载的权重字典
     """
-    if not type(checkpoint_path) in (str, pathlib.Path):
+    if not isinstance(checkpoint_path, (str, pathlib.Path)):
         raise ValueError(f"checkpoint_path 必须为字符串类型或pathlib.Path类型的喵! 现在的type: {type(checkpoint_path)}")
     if isinstance(checkpoint_path, str):
         if not checkpoint_path.strip():

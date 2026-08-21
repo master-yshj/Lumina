@@ -138,11 +138,20 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
         valid_metric_class = METRIC_REGISTRY[valid_metric_type]
         valid_metric_list.append(valid_metric_class(**valid_metric_params))
     valid_metric_collection = MetricCollection(valid_metric_list)
+    test_metrics_config = metrics_config["test"]
+    test_metric_list = []
+    for test_metric in test_metrics_config:
+        test_metric_type = test_metric["type"].strip().casefold()
+        test_metric_params = test_metric["params"]
+        test_metric_class = METRIC_REGISTRY[test_metric_type]
+        test_metric_list.append(test_metric_class(**test_metric_params))
+    test_metric_collection = MetricCollection(test_metric_list)
 
     # 构建metric的csv文件保存配置
     metrics_dir = experiment_paths["metrics_dir"]
     train_metrics_path = metrics_dir / "train_metrics.csv"
     valid_metrics_path = metrics_dir / "valid_metrics.csv"
+    test_metrics_path = metrics_dir / "test_metrics.csv"
 
     base_fieldnames = ["global_step"]
     loss_fieldnames = ["avg_loss"]
@@ -165,6 +174,11 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
     valid_fieldnames = base_fieldnames + loss_fieldnames + valid_metric_fieldnames
     train_metrics_writer = MetricWriter(train_metrics_path, train_fieldnames)
     valid_metrics_writer = MetricWriter(valid_metrics_path, valid_fieldnames)
+    test_metric_fieldnames = []
+    for metric in test_metric_list:
+        test_metric_fieldnames.extend(metric.output_fields())
+    test_fieldnames = base_fieldnames + loss_fieldnames + test_metric_fieldnames
+    test_metrics_writer = MetricWriter(test_metrics_path, test_fieldnames)
 
 
     # 实例化task
@@ -277,19 +291,46 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
             collate_fn = mlm_collator,
         )
 
+    # test.enabled 为True时接收valid参数，False时为None
+    test_config = config_dict["test"]
+    test_enabled = test_config["enabled"]
+    test_dataloader = None
+    if test_enabled:
+        test_path = dataset_config["test_path"]
+        # 实例化dataset
+        test_dataset = MLMDataset(
+            data_file_path=test_path,
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+        )
+        # 实例化dataloader
+        test_dataloader = DataLoader(
+            dataset = test_dataset,
+            batch_size = batch_size,
+            shuffle = False,
+            num_workers = num_workers,
+            pin_memory = pin_memory,
+            drop_last = False,
+            collate_fn = mlm_collator,
+        )
+
     # 组装参数字典
-    train_params_dict = {}
     train_params_dict = {
         "trainer": trainer,
+        "task": mlm_task,
         "train_dataloader": train_dataloader,
         "valid_dataloader": valid_dataloader,
+        "test_dataloader": test_dataloader,
         "experiment_paths": experiment_paths,
         "train_metric_collection": train_metric_collection,
         "valid_metric_collection": valid_metric_collection,
+        "test_metric_collection": test_metric_collection,
         "train_metrics_writer": train_metrics_writer,
         "valid_metrics_writer": valid_metrics_writer,
+        "test_metrics_writer": test_metrics_writer,
         "train_metrics_path": train_metrics_path,
         "valid_metrics_path": valid_metrics_path,
+        "test_metrics_path": test_metrics_path,
         "fit_kwargs": {
             "total_iters": total_iters,
             "log_every_iters": log_every_iters,

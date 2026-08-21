@@ -84,12 +84,12 @@ model:
 
   # TinyBertForMaskedLM 构造参数
   # vocab_size 与 padding_idx 由 Tokenizer 提供
-  hidden_size: 256                                # default: 128
+  hidden_size: 128                                # default: 128
   max_position_embeddings: 128                    # default: 128
   type_vocab_size: 2                              # default: 2
-  num_heads: 8                                    # default: 4
-  intermediate_size: 1024                          # default: 512
-  num_layers: 16                                   # default: 2
+  num_heads: 4                                    # default: 4
+  intermediate_size: 512                          # default: 512
+  num_layers: 2                                   # default: 2
   embedding_dropout: 0.1                          # default: 0.1
   attention_dropout: 0.1                          # default: 0.1
   hidden_dropout: 0.1                             # default: 0.1
@@ -195,7 +195,7 @@ scheduler:
 # 训练配置
 train:
   # Optimizer 实际更新次数，即目标 global_step
-  total_iters: 50000                              # default: 10000
+  total_iters: 500                              # default: 10000
 
   # 累积多少个 Micro Batch 后更新一次参数
   accumulation_steps: 1                           # default: 1
@@ -227,7 +227,7 @@ valid:
 test:
   # 当前测试链路尚未接入
   # 最小 MLM 链路阶段保持 false
-  enabled: false                                  # default: false
+  enabled: true                                  # default: false
 
 
 # 设备和后续分布式配置
@@ -247,6 +247,11 @@ metrics:
         ignore_index: -100
 
   valid:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100
+
+  test:
     - type: "TokenAccuracy"                       # REQUIRED
       params:
         ignore_index: -100

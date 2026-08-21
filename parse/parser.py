@@ -171,6 +171,9 @@ CUSTOM_DICT = {
         ],
         "valid": [
             METRIC_ITEM_CUSTOM_DICT,
+        ],
+        "test": [
+            METRIC_ITEM_CUSTOM_DICT,
         ]
     }
 }
@@ -1121,10 +1124,6 @@ def validate_config(config_dict):
     test_enabled = copy_dict["test"]["enabled"]
     if not isinstance(test_enabled, bool):
         raise ValueError(f"config.test.enabled: {test_enabled} 必须为bool类型的喵!")
-    if test_enabled:
-        pass
-    else:
-        pass
 
     # cuda 字段
     # cuda.device 字段
@@ -1226,6 +1225,49 @@ def validate_config(config_dict):
                 raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
             if not ignore_index == -100:
                 raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+    # metrics.test 字段
+    if test_enabled:
+        metrics_test = copy_dict["metrics"]["test"]
+        if not isinstance(metrics_test, list):
+            raise ValueError(
+                f"config.metrics.test: {metrics_test} 必须为list类型的喵! 现在的type: {type(metrics_test)}")
+        if not metrics_test:
+            raise ValueError(f"config.metrics.test 不能为空喵!")
+        for idx, metric in enumerate(metrics_test):
+            if not isinstance(metric, dict):
+                raise ValueError(
+                    f"config.metrics.test[{idx}]: {metric} 必须为dict类型的喵! 现在的type: {type(metric)}")
+            if not metric:
+                raise ValueError(f"config.metrics.test[{idx}] 不能为空喵!")
+            if "type" not in metric:
+                raise ValueError(f"config.metrics.test[{idx}]: {metric} 缺少了type字段喵!")
+            metric_type = metric["type"]
+            if not isinstance(metric_type, str):
+                raise ValueError(
+                    f"config.metrics.test[{idx}].type: {metric_type} 必须为字符串类型的喵! 现在的type: {type(metric_type)}")
+            if not metric_type.strip():
+                raise ValueError(f"config.metrics.test[{idx}].type 不能为空喵!")
+            if metric_type.strip().casefold() not in SUPPORTED_METRICS:
+                raise ValueError(
+                    f"config.metrics.test[{idx}].type: {metric_type} 这一metric类型不受支持喵! 受支持的metrics: {SUPPORTED_METRICS}")
+            if "params" not in metric:
+                raise ValueError(f"config.metrics.test[{idx}]: {metric} 缺少了params字段喵!")
+            metric_params = metric["params"]
+            if not isinstance(metric_params, dict):
+                raise ValueError(
+                    f"config.metrics.test[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
+            if not metric_params:
+                raise ValueError(f"config.metrics.test[{idx}].params 不能为空喵!")
+            # 根据metric的type进行硬编码校验
+            # TokenAccuracy
+            if metric_type.strip().casefold() == "tokenaccuracy":
+                if "ignore_index" not in metric_params:
+                    raise ValueError(f"token_accuracy这一metric的params必须包含ignore_index字段喵!")
+                ignore_index = metric_params["ignore_index"]
+                if not type(ignore_index) is int:
+                    raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
+                if not ignore_index == -100:
+                    raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
 
 
 def load_config(yaml_path):

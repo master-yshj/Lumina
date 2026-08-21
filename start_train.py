@@ -8,6 +8,7 @@ from experiments import create_experiments_directories, save_config_snapshot, re
 from logger.logger import RunLogger
 from metrics.plotter import plot_csv_metrics
 from device import check_device, get_memory_summary
+from Tester.test_runner import run_test
 
 def main():
     args = parse_args()
@@ -79,6 +80,26 @@ def main():
     valid_metrics_path = task_components["valid_metrics_path"]
     plot_csv_metrics(train_metrics_path, figures_dir)
     plot_csv_metrics(valid_metrics_path, figures_dir)
+
+    if config_dict["test"]["enabled"]:
+        test_metrics_path = task_components["test_metrics_path"]
+        test_metrics_writer = task_components["test_metrics_writer"]
+        test_metric_collection = task_components["test_metric_collection"]
+        test_dataloader = task_components["test_dataloader"]
+        checkpoint_dir = experiment_paths["experiment_dir"] / "checkpoints"
+        test_ckpt_path = checkpoint_dir / "best.pt"
+
+        task = task_components["task"]
+        test_summary = run_test(
+            task=task,
+            test_dataloader=test_dataloader,
+            checkpoint_path=test_ckpt_path,
+            device=device,
+            metric_collection=test_metric_collection,
+            metrics_writer=test_metrics_writer,
+            logger=logger,
+        )
+        logger.info(test_summary)
 
     logger.finish(train_summary)
 

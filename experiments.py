@@ -155,3 +155,38 @@ def resolve_resume_experiment_paths(resume_path):
     experiment_paths["config_snapshot_path"] = config_snapshot_path
 
     return experiment_paths
+
+def create_test_directories(experiment_dir):
+    if not isinstance(experiment_dir, pathlib.Path):
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为pathlib.Path类型的喵!")
+    if not experiment_dir.exists():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须存在喵!")
+    if not experiment_dir.is_dir():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为目录喵!")
+    current_time = time.strftime("%Y%m%d_%H%M%S")
+    test_dir = experiment_dir / "test" / current_time
+    print(experiment_dir)
+    print(test_dir)
+    if not test_dir.exists():
+        test_dir.mkdir()
+    directories = {}
+    test_config_dir = test_dir / "config"
+    test_logs_dir = test_dir / "logs"
+    test_metrics_dir = test_dir / "metrics"
+    dir_list = [test_config_dir, test_logs_dir, test_metrics_dir, test_dir]
+    for single_dir in dir_list:
+        if not single_dir.exists():
+            single_dir.mkdir(
+                parents=True,
+                exist_ok=False,
+            )
+    test_config_path = test_config_dir / "config.yaml"
+    test_logs_path = test_logs_dir / "test.log"
+    test_metrics_path = test_metrics_dir / "test.csv"
+
+    directories["test_dir"] = test_dir
+    directories["test_config_path"] = test_config_path
+    directories["test_logs_path"] = test_logs_path
+    directories["test_metrics_path"] = test_metrics_path
+    print(directories)
+    return directories

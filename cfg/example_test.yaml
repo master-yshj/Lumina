@@ -1,0 +1,36 @@
+name: TinyBert_MLM_Test
+
+task: MLM_PreTrain_Test
+
+checkpoint:
+  path: ../experiments/TinyBert_MLM_PreTrain/20260821_183531/checkpoints/best.pt
+  config_path: null
+
+losses:
+  - name: "mlm_cross_entropy"
+    type: "CrossEntropyLoss"
+    weight: 1.0
+    params:
+      ignore_index: -100
+
+dataset:
+  type: tiny_zhwiki
+  dataset_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki"
+  test_path: "tiny_zhwiki_test.jsonl"
+  max_seq_length: 128
+  mlm_prob: 0.15
+
+dataloader:
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+
+cuda:
+  device: cuda
+  gpu_nums: 1
+
+metrics:
+  test:
+    - type: TokenAccuracy
+      params:
+        ignore_index: -100
