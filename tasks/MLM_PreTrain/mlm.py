@@ -32,25 +32,27 @@ class MLMTask(nn.Module):
             raise ValueError(f"batch里面没有叫 'attention_mask' 的字段喵! ")
         if not "token_type_ids" in batch:
             raise ValueError(f"batch里面没有叫 'token_type_ids' 的字段喵! ")
-        if not "labels" in batch:
-            raise ValueError(f"batch里面没有叫 'labels' 的字段喵! ")
 
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         token_type_ids = batch["token_type_ids"]
-        labels = batch["labels"]
 
         output_dict = {}
         logits = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)  # [batch_size, seq_length, num_classes]
         output_dict["logits"] = logits
-        if not logits.shape[:2] == labels.shape:
-            raise ValueError(f"logits和labels的形状前两维度对不上喵！logits.shape: {logits.shape}, labels.shape: {labels.shape}")
         batch_size = logits.size(0)
         seq_length = logits.size(1)
         num_classes = logits.size(2)
-        logits = logits.reshape(batch_size*seq_length, num_classes)
-        labels = labels.reshape(batch_size*seq_length)
-        loss = self.loss_fn(logits=logits, labels=labels)
-        output_dict["loss"] = loss["loss"]
-        output_dict["losses"] = loss["losses"]
+        if self.loss_fn is not None:
+            if not "labels" in batch:
+                raise ValueError(f"batch里面没有叫 'labels' 的字段喵! ")
+            labels = batch["labels"]
+            if not logits.shape[:2] == labels.shape:
+                raise ValueError(
+                    f"logits和labels的形状前两维度对不上喵！logits.shape: {logits.shape}, labels.shape: {labels.shape}")
+            labels = labels.reshape(batch_size*seq_length)
+            logits = logits.reshape(batch_size * seq_length, num_classes)
+            loss = self.loss_fn(logits=logits, labels=labels)
+            output_dict["loss"] = loss["loss"]
+            output_dict["losses"] = loss["losses"]
         return output_dict

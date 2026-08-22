@@ -196,6 +196,75 @@ def check_and_add_config(config,template,loss_completed=False,key="config"):
                     else:
                         pass
 
+    if loss_completed:
+        # 当template为dict时
+        if isinstance(template, dict):
+            if not isinstance(config, dict):
+                raise ValueError(f"{key}: 的类型必须为dict喵!")
+            for dic_key, dic_value in config.items():
+                if dic_key not in template:
+                    raise ValueError(f"{dic_key} 这个键不应该存在于 {key} 中喵! 请好好检查喵!")
+            for template_key, template_value in template.items():
+                if template_key == "losses":
+                    continue
+                if template_key not in config:
+                    raise ValueError(f"{key} 中缺少了一个键 {template_key} 喵! 请补上喵! 它的type是: {type(template_value)}")
+                # 当template_value为REQUIRED字段时
+                if template_value == "REQUIRED":
+                    if config[template_key] is None:
+                        raise ValueError(f"{template_key} 为必填字段喵!")
+                if type(template_value) in (dict, list):
+                    if config[template_key] is not None:
+                        if isinstance(template_value, dict):
+                            if isinstance(config[template_key], dict):
+                                check_and_add_config(config[template_key],template_value,True,key+"."+template_key)
+                            else:
+                                raise ValueError(f"{config[template_key]} 的类型必须为dict喵! 它现在的type是: {type(config[template_key])}")
+                        if isinstance(template_value, list):
+                            if isinstance(config[template_key], list):
+                                check_and_add_config(config[template_key],template_value,True,key+"."+template_key)
+                            else:
+                                raise ValueError(f"{config[template_key]} 的类型必须为list喵! 它现在的type是: {type(config[template_key])}")
+                    else:
+                        raise ValueError(f"{template_key} 的值不能为空喵!")
+                else:
+                    if config[template_key] is None:
+                        config[template_key] = template_value
+                    else:
+                        pass
+
+        # 当template为list时
+        if isinstance(template, list):
+            if not isinstance(config, list):
+                raise ValueError(f"{key} 的类型必须为list喵!")
+            if len(config) == 0:
+                raise ValueError(f"{key} 的值不能为空喵!")
+            else:
+                for index,config_elem in enumerate(config):
+                    template_elem = template[0]
+                    if template_elem == "REQUIRED":
+                        if config[index] is None:
+                            raise ValueError(f"config[{index}]: {config[index]} 为必填字段喵!")
+                    if type(template_elem) in (dict, list):
+                        if config_elem is not None:
+                            if isinstance(template_elem, dict):
+                                if isinstance(config_elem, dict):
+                                    check_and_add_config(config_elem,template_elem,True,key+"["+str(index)+"]")
+                                else:
+                                    raise ValueError(f"{key} 的值 {config_elem} 的类型应该为dict喵! 它现在的type是: {type(config_elem)}")
+                            if isinstance(template_elem, list):
+                                if isinstance(config_elem, list):
+                                    check_and_add_config(config_elem,template_elem,True,key+"["+str(index)+"]")
+                                else:
+                                    raise ValueError(f"{key} 的值 {config_elem} 的类型应该为list喵! 它现在的type是: {type(config_elem)}")
+                        else:
+                            raise ValueError(f"{key} 的值 (如{template_elem}) 不能为空喵!")
+                    else:
+                        if config_elem is None:
+                            config[index] = template_elem
+                        else:
+                            pass
+
 def relative_to_absolute_path(relative_path,base_path):
     """
     将基础路径和相对路径拼接为绝对路径，便于进一步修改配置中的数据

@@ -1,8 +1,9 @@
 import pathlib
 import time
-from copy import deepcopy
-
 import yaml
+import os
+
+from copy import deepcopy
 
 def create_experiments_directories(experiments_name, experiments_root=None):
     """
@@ -168,7 +169,7 @@ def create_test_directories(experiment_dir):
     print(experiment_dir)
     print(test_dir)
     if not test_dir.exists():
-        test_dir.mkdir()
+        os.makedirs(test_dir)
     directories = {}
     test_config_dir = test_dir / "config"
     test_logs_dir = test_dir / "logs"
@@ -176,10 +177,7 @@ def create_test_directories(experiment_dir):
     dir_list = [test_config_dir, test_logs_dir, test_metrics_dir, test_dir]
     for single_dir in dir_list:
         if not single_dir.exists():
-            single_dir.mkdir(
-                parents=True,
-                exist_ok=False,
-            )
+            os.makedirs(single_dir)
     test_config_path = test_config_dir / "config.yaml"
     test_logs_path = test_logs_dir / "test.log"
     test_metrics_path = test_metrics_dir / "test.csv"
@@ -188,5 +186,34 @@ def create_test_directories(experiment_dir):
     directories["test_config_path"] = test_config_path
     directories["test_logs_path"] = test_logs_path
     directories["test_metrics_path"] = test_metrics_path
+    print(directories)
+    return directories
+
+def create_inference_directories(experiment_dir):
+    if not isinstance(experiment_dir, pathlib.Path):
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为pathlib.Path类型的喵!")
+    if not experiment_dir.exists():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须存在喵!")
+    if not experiment_dir.is_dir():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为目录喵!")
+    current_time = time.strftime("%Y%m%d_%H%M%S")
+    inference_dir = experiment_dir / "inference" / current_time
+    print(experiment_dir)
+    print(inference_dir)
+    if not inference_dir.exists():
+        os.makedirs(inference_dir)
+    directories = {}
+    inference_config_dir = inference_dir / "config"
+    inference_logs_dir = inference_dir / "logs"
+    dir_list = [inference_config_dir, inference_logs_dir, inference_dir]
+    for single_dir in dir_list:
+        if not single_dir.exists():
+            os.makedirs(single_dir)
+    inference_config_path = inference_config_dir / "config.yaml"
+    inference_logs_path = inference_logs_dir / "inference.log"
+
+    directories["inference_dir"] = inference_dir
+    directories["inference_config_path"] = inference_config_path
+    directories["inference_logs_path"] = inference_logs_path
     print(directories)
     return directories

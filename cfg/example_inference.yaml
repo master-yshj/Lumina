@@ -1,0 +1,14 @@
+name: TinyBert_MLM_Inference
+task: MLM_PreTrain_Inference
+
+checkpoint:
+  path: ../experiments/TinyBert_MLM_PreTrain/20260821_183531/checkpoints/best.pt
+  config_path: null
+
+cuda:
+  device: cuda
+  gpu_nums: 1
+
+inference:
+  top_k: 5
+  max_seq_length: 128

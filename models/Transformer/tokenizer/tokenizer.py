@@ -1,4 +1,5 @@
 import torch
+import re
 import unicodedata
 
 class ExampleTokenizer:
@@ -55,6 +56,17 @@ class ExampleTokenizer:
         self.sep_token_id = self.token_to_id[self.sep_token]
         self.mask_token = "[MASK]"
         self.mask_token_id = self.token_to_id[self.mask_token]
+        self.special_tokens = [self.pad_token, self.unk_token, self.cls_token, self.sep_token, self.mask_token]
+        escaped_special_tokens = [
+            re.escape(token)
+            for token in sorted(self.special_tokens, key=len, reverse=True)
+        ]
+        special_tokens_alternation = "|".join(escaped_special_tokens)
+        self.special_token_pattern = re.compile(
+            f"({special_tokens_alternation})"
+        )
+
+
 
     def __len__(self):
         return self.vocab_size
@@ -274,19 +286,35 @@ class ExampleTokenizer:
                 else:
                     return sub_tokens
 
-    def tokenize(self,text):
+    def tokenize(self,text,preserve_special_tokens=False):
         """
         tokenize主方法
         :param text: 用户输入的原始文本,str
+        :param preserve_special_tokens: 是否保护特殊token，即是否不把原始文本中的特殊token送入tokenize，bool
         :return: final_token_list, list，tokenize的最终结果
         """
         if not isinstance(text, str):
             raise ValueError(f"输入的text必须是字符串类型的喵！")
-        basic_token_list = self._basic_tokenize(text)
+        if not isinstance(preserve_special_tokens, bool):
+            raise ValueError(f"输入的preserve_special_tokens必须为bool类型的喵！")
         final_token_list = []
-        for token in basic_token_list:
-            wordpiece_token_list = self._wordpiece_tokenize(token)
-            final_token_list.extend(wordpiece_token_list)
+        if preserve_special_tokens:
+            text_parts = self.special_token_pattern.split(text)
+            for text_part in text_parts:
+                if text_part == "":
+                    pass
+                elif text_part in self.special_tokens:
+                    final_token_list.append(text_part)
+                else:
+                    basic_token_list = self._basic_tokenize(text_part)
+                    for token in basic_token_list:
+                        wordpiece_token_list = self._wordpiece_tokenize(token)
+                        final_token_list.extend(wordpiece_token_list)
+        else:
+            basic_token_list = self._basic_tokenize(text)
+            for token in basic_token_list:
+                wordpiece_token_list = self._wordpiece_tokenize(token)
+                final_token_list.extend(wordpiece_token_list)
         return final_token_list
 
     def convert_tokens_to_ids(self, tokens):
@@ -322,13 +350,14 @@ class ExampleTokenizer:
             tokens_list.append(self.id_to_token[idx])
         return tokens_list
 
-    def encode(self, text, add_special_tokens=True, truncation = False, padding=False, text_pair=None, max_length=None):
+    def encode(self, text, add_special_tokens=True, truncation = False, padding=False, preserve_special_tokens=False, text_pair=None, max_length=None):
         """
         tokenizer的编码逻辑
         :param text: str, 源文本
         :param add_special_tokens: bool, 是否加入特殊token
         :param truncation: bool, 超过长度时是否进行截断
         :param padding: bool, 是否进行pad补位
+        :param preserve_special_tokens: 是否保护特殊token，即是否不把原始文本中的特殊token送入tokenize，bool
         :param text_pair: None or str, 另一段文本
         :param max_length: int, token最大长度
         :return: encoded_set, dict {
@@ -347,6 +376,8 @@ class ExampleTokenizer:
             raise ValueError(f"输入的truncation必须为bool类型的喵！")
         if not isinstance(padding, bool):
             raise ValueError(f"输入的padding必须为bool类型的喵！")
+        if not isinstance(preserve_special_tokens, bool):
+            raise ValueError(f"输入的preserve_special_tokens必须为bool类型的喵！")
         if not isinstance(text_pair, (str,type(None))):
             raise ValueError(f"输入的text_pair必须为字符串类型或者None类型的喵！")
         if type(max_length) is not int and max_length is not None:
@@ -358,9 +389,9 @@ class ExampleTokenizer:
         if padding and (type(max_length) is not int or max_length <= 0):
             raise ValueError(f"如果要padding填充的话，max_length的值必须至少为正整数喵！")
         # 分词
-        token_a = self.tokenize(text)
+        token_a = self.tokenize(text, preserve_special_tokens=preserve_special_tokens)
         if text_pair is not None:
-            token_b = self.tokenize(text_pair)
+            token_b = self.tokenize(text_pair, preserve_special_tokens=preserve_special_tokens)
             if add_special_tokens:
                 if truncation:
                     special_tokens_count = 3
@@ -629,14 +660,7 @@ class QATokenizer(ExampleTokenizer):
                 else:
                     return sub_tokens, sub_tokens_offsets
 
-    def tokenize_with_offsets(self, text):
-        """
-        tokenize主方法
-        :param text: 用户输入的原始文本,str
-        :return: final_token_list, list，tokenize的最终结果, merged_offsets, token的token级offset的列表
-        """
-        if not isinstance(text, str):
-            raise ValueError(f"输入的text必须是字符串类型的喵！")
+    def _tokenize_text_part_with_offsets(self, text):
         basic_token_list, basic_token_offsets = self._basic_tokenize_with_offsets(text)
         final_token_list = []
         final_token_offsets = []
@@ -655,6 +679,56 @@ class QATokenizer(ExampleTokenizer):
         for char_offsets in final_token_offsets:
             token_offset = self._merge_char_offsets(char_offsets)
             merged_offsets.append(token_offset)
+        return final_token_list, merged_offsets
+
+    def tokenize_with_offsets(self, text, preserve_special_tokens=False):
+        """
+        tokenize主方法
+        :param text: 用户输入的原始文本,str
+        :param preserve_special_tokens: 是否保护特殊token，即是否不把原始文本中的特殊token送入tokenize，bool
+        :return: final_token_list, list，tokenize的最终结果, merged_offsets, token的token级offset的列表
+        """
+        if not isinstance(text, str):
+            raise ValueError(f"输入的text必须是字符串类型的喵！")
+        if not isinstance(preserve_special_tokens, bool):
+            raise ValueError(f"输入的preserve_special_tokens必须为bool类型的喵！")
+        if not preserve_special_tokens:
+            final_token_list, merged_offsets = self._tokenize_text_part_with_offsets(text)
+        else:
+            cursor = 0
+            final_token_list, merged_offsets = [], []
+            for match in self.special_token_pattern.finditer(text):
+                text_part = text[cursor : match.start()]
+                if text_part != "":
+                    temp_token_list, temp_merged_offsets = self._tokenize_text_part_with_offsets(text_part)
+                    normalized_offsets = []
+                    for i, offset in enumerate(temp_merged_offsets):
+                        start = offset[0]
+                        end = offset[1]
+                        normalized_offset = (start+cursor, end+cursor)
+                        normalized_offsets.append(normalized_offset)
+                    final_token_list.extend(temp_token_list)
+                    merged_offsets.extend(normalized_offsets)
+                special_tokens = match.group()
+                special_tokens_offsets = (match.start(), match.end())
+                final_token_list.append(special_tokens)
+                merged_offsets.append(special_tokens_offsets)
+                cursor = match.end()
+            tail_text = text[cursor:]
+            if tail_text != "":
+                temp_token_list, temp_merged_offsets = self._tokenize_text_part_with_offsets(tail_text)
+                normalized_offsets = []
+                for i, offset in enumerate(temp_merged_offsets):
+                    start = offset[0]
+                    end = offset[1]
+                    normalized_offset = (start + cursor, end + cursor)
+                    normalized_offsets.append(normalized_offset)
+                final_token_list.extend(temp_token_list)
+                merged_offsets.extend(normalized_offsets)
+            if not len(final_token_list) == len(merged_offsets):
+                raise ValueError(f"final_token_list长度: {len(final_token_list)}"
+                                 f"merged_offsets长度: {len(merged_offsets)}"
+                                 f"两者长度不一致喵!")
         return final_token_list, merged_offsets
 
     def _merge_char_offsets(self, char_offsets):
@@ -685,13 +759,14 @@ class QATokenizer(ExampleTokenizer):
         token_offsets = (char_offsets[0][0], char_offsets[-1][1])
         return token_offsets
 
-    def encode_with_offsets(self, text, add_special_tokens=True, truncation=False, padding=False, text_pair=None, max_length=None):
+    def encode_with_offsets(self, text, add_special_tokens=True, truncation=False, padding=False, preserve_special_tokens=False, text_pair=None, max_length=None):
         """
                 tokenizer的编码逻辑
                 :param text: str, 源文本
                 :param add_special_tokens: bool, 是否加入特殊token
                 :param truncation: bool, 超过长度时是否进行截断
                 :param padding: bool, 是否进行pad补位
+                :param preserve_special_tokens: 是否保护特殊token，即是否不把原始文本中的特殊token送入tokenize，bool
                 :param text_pair: None or str, 另一段文本
                 :param max_length: int, token最大长度
                 :return: encoded_set, dict {
@@ -711,6 +786,8 @@ class QATokenizer(ExampleTokenizer):
             raise ValueError(f"输入的truncation必须为bool类型的喵！")
         if not isinstance(padding, bool):
             raise ValueError(f"输入的padding必须为bool类型的喵！")
+        if not isinstance(preserve_special_tokens, bool):
+            raise ValueError(f"输入的preserve_special_tokens必须为bool类型的喵！")
         if not isinstance(text_pair, (str, type(None))):
             raise ValueError(f"输入的text_pair必须为字符串类型或者None类型的喵！")
         if type(max_length) is not int and max_length is not None:
@@ -722,9 +799,9 @@ class QATokenizer(ExampleTokenizer):
         if padding and (type(max_length) is not int or max_length <= 0):
             raise ValueError(f"如果要padding填充的话，max_length的值必须至少为正整数喵！")
         # 分词
-        token_a,offsets_a = self.tokenize_with_offsets(text)
+        token_a,offsets_a = self.tokenize_with_offsets(text, preserve_special_tokens=preserve_special_tokens)
         if text_pair is not None:
-            token_b, offsets_b = self.tokenize_with_offsets(text_pair)
+            token_b, offsets_b = self.tokenize_with_offsets(text_pair, preserve_special_tokens=preserve_special_tokens)
             if add_special_tokens:
                 if truncation:
                     special_tokens_count = 3
