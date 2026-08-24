@@ -49,6 +49,7 @@ def main():
     task_components = task_builder(
         config_dict=config_dict,
         test_metrics_path=test_metrics_path,
+        logger=logger,
     )
     task = task_components["task"]
     test_dataloader = task_components["test_dataloader"]

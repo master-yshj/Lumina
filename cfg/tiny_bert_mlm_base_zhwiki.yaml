@@ -1,0 +1,257 @@
+## 配置的名称
+#name: Example                 # essential
+## 使用模块的模型来自于哪个目录
+#model:
+#  type: "Transformer" #essential
+#  model_path: "../models/Transformer"  # essential
+## 种子
+#seed : 42                     # default: 42
+## 模块
+#modules:
+#  # 具体架构顺序,可传E，D，T，E表示Encoder，D表示Decoder，T表示Transformer
+#  order: [E,D,T]              # essential
+#  layer_nums: [1,1,1]         # essential
+#
+#task: "MLM_PreTrain"          # essential
+#
+#cuda:
+#  gpu_nums: 1                 # default: torch.cuda.device_count()
+#  num_workers: 0              # default: 0
+#
+#dataset_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki"                                     # essential
+#
+#train:
+#  dataset:
+#    type: "tiny_zhwiki"       # essential
+#    dataset_train_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_train.jsonl"   # essential
+#  batch_size: 8               # default: 8
+#  accumulation_steps: 1       # default: 1
+#  total_iters: 10000          # default: 10000
+#  loss:
+#    CrossEntropyLoss: 1.0     # default: "{CrossEntropyLoss:1,}"
+#  optimizer: AdamW            # default: Adam
+#  scheduler: StepLR           # default: StepLR
+#  embedding:
+#    type: BertEmbedding       # default: BertEmbedding
+#    hidden_size: 128          # default: 128
+#    max_position_embeddings: 128      # default: 128
+#    type_vocab_size: 2        # default: 2
+#    dropout: 0.1              # default: 0.1
+#    layer_norm_eps: 1.0e-12   # default: 1.0e-12
+#  lr: 1.0e-3                  # default: 1.0e-3
+#
+#valid:
+#  dataset:
+#    type: "tiny_zhwiki"
+#    dataset_val_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_val.jsonl"       # essential
+#  valid_iters: 500            # default: 500
+#  early_stop_patience: 10     # default: 10
+#  validation_rounds_before_save_ckpt: 1     # default: 1
+#
+#test:
+#  dataset:
+#    type: "tiny_zhwiki"
+#    dataset_test_path: "../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki/tiny_zhwiki_test.jsonl"     # essential
+#
+#tokenizer:
+#  type: ExampleTokenizer      # default: ExampleTokenizer
+#  vocab_file_path: "../tokenizer/bert_base_chinese_tokenizer/vocab.txt"   # default: "../tokenizer/bert_base_chinese_tokenizer/vocab.txt"
+
+#===================================================
+# 实验基本信息
+#===================================================
+
+# 实验名称
+name: "TinyBert_MLM_PreTrain"                     # REQUIRED
+
+# 随机种子
+seed: 42                                          # default: 42
+
+# 当前任务
+task: "MLM_PreTrain"                              # REQUIRED
+
+# 模型配置
+model:
+  # 模型族，用于选择对应模型目录和配置模板
+  type: "Transformer"                             # REQUIRED
+
+  # Transformer 模型族中的具体模型
+  name: "TinyBertForMaskedLM"                     # REQUIRED
+
+  # 模型族实现目录
+  # 相对路径以当前 YAML 所在目录为基准
+  model_path: "../models/Transformer"             # REQUIRED
+
+  # TinyBertForMaskedLM 构造参数
+  # vocab_size 与 padding_idx 由 Tokenizer 提供
+  hidden_size: 128                                # default: 128
+  max_position_embeddings: 128                    # default: 128
+  type_vocab_size: 2                              # default: 2
+  num_heads: 4                                    # default: 4
+  intermediate_size: 512                          # default: 512
+  num_layers: 2                                   # default: 2
+  embedding_dropout: 0.1                          # default: 0.1
+  attention_dropout: 0.1                          # default: 0.1
+  hidden_dropout: 0.1                             # default: 0.1
+  layer_norm_eps: 1.0e-12                         # default: 1.0e-12
+
+#===================================================
+# Tokenizer分词器及其词表信息
+#===================================================
+
+# Tokenizer 配置
+tokenizer:
+  type: "ExampleTokenizer"                        # default: ExampleTokenizer
+
+  # 相对路径以当前 YAML 所在目录为基准
+  vocab_file_path: "../tokenizer/bert_base_chinese_tokenizer/vocab.txt" # REQUIRED
+
+  do_lower_case: true                             # default: true
+  strip_accents: null                             # default: null
+  max_input_chars_per_word: 100                   # default: 100
+
+#===================================================
+# 数据集及其路径相关配置
+#===================================================
+
+# 数据集配置
+dataset:
+  type: "base_zhwiki"                             # REQUIRED
+
+  # 数据集根目录
+  # 相对路径以当前 YAML 所在目录为基准
+  dataset_path: "../dataset/QA/pretrain/chinese_wiki/base_zhwiki" # REQUIRED
+
+  # 可以相对于 dataset_path，也可以是绝对路径
+  # build_config 后统一变成绝对 Path
+  train_path: "base_zhwiki_train.jsonl"           # REQUIRED
+  valid_path: "base_zhwiki_val.jsonl"             # REQUIRED
+  test_path: "base_zhwiki_test.jsonl"             # REQUIRED
+
+  # MLMDataset 参数
+  max_seq_length: 128                             # default: 128
+
+  # MLMCollator 参数
+  mlm_prob: 0.15                                  # default: 0.15
+
+#===================================================
+# DataLoader及其参数相关配置
+#===================================================
+
+# DataLoader 配置
+dataloader:
+  # 单进程、单设备的 Micro Batch Size
+  batch_size: 8                                   # default: 8
+  shuffle: true                                   # default: true
+  num_workers: 0                                  # default: 0
+  pin_memory: false                               # default: false
+  drop_last: false                                # default: false
+
+#===================================================
+# 损失函数相关配置
+#===================================================
+
+# Loss 配置
+losses:
+  - name: "mlm_cross_entropy"                     # REQUIRED
+    type: "CrossEntropyLoss"                      # REQUIRED
+    weight: 1.0                                   # default: 1.0
+    params:
+      ignore_index: -100                          # default: -100
+
+#===================================================
+# 优化器及其相关参数配置
+#===================================================
+
+# Optimizer 配置
+optimizer:
+  type: "AdamW"                                   # default: AdamW
+  lr: 1.0e-3                                      # default: 1.0e-3
+  weight_decay: 0.01                              # default: 0.01
+
+  # YAML 解析后为 list
+  # 入口创建 AdamW 时转换为 tuple
+  betas: [0.9, 0.999]                             # default: [0.9,0.999]
+
+  eps: 1.0e-8                                     # default: 1.0e-8
+
+
+# Scheduler 配置
+scheduler:
+  type: "StepLR"                                  # default: StepLR
+
+  # 当前只支持在 Optimizer 更新后推进
+  interval: "step"                                # default: step
+
+  # StepLR 构造参数
+  step_size: 1000                                 # default: 1000
+  gamma: 0.1                                      # default: 0.1
+  last_epoch: -1                                  # default: -1
+
+#===================================================
+# 训练参数配置
+#===================================================
+
+# 训练配置
+train:
+  # Optimizer 实际更新次数，即目标 global_step
+  total_iters: 50000                              # default: 10000
+
+  # 累积多少个 Micro Batch 后更新一次参数
+  accumulation_steps: 1                           # default: 1
+
+  # 每隔多少个 global_step 输出一次训练日志
+  log_every_iters: 100                            # default: 100
+
+  # 是否在训练期间执行验证
+  do_validation: true
+
+#===================================================
+# 验证参数配置
+#===================================================
+
+# 验证配置
+# 仅当 train.do_validation=true 时要求 valid_path 存在
+valid:
+  # 每隔多少个 global_step 执行一次验证
+  valid_every_iters: 500                          # default: 500
+
+  # 连续多少轮验证没有改善后提前停止
+  early_stop_patience: 10                         # default: 10
+
+  # 连续完成多少轮验证后保存一次 Checkpoint
+  validation_rounds_before_save_ckpt: 1           # default: 1
+
+
+# 测试配置
+test:
+  # 当前测试链路尚未接入
+  # 最小 MLM 链路阶段保持 false
+  enabled: true                                  # default: false
+
+
+# 设备和后续分布式配置
+cuda:
+  # 当前支持 cpu、cuda、cuda:N
+  device: "cuda"                                   # default: cpu
+
+  # 当前最小链路要求为 1
+  # DDP 阶段与 torchrun 的 WORLD_SIZE 对齐
+  gpu_nums: 1                                     # default: 1
+
+# 指标相关配置
+metrics:
+  train:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100
+
+  valid:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100
+
+  test:
+    - type: "TokenAccuracy"                       # REQUIRED
+      params:
+        ignore_index: -100

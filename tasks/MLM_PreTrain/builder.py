@@ -42,6 +42,10 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
         data_file_path=train_path,
         tokenizer=tokenizer,
         max_seq_length=max_seq_length,
+        split_name="train",
+        progress_interval=10000,
+        read_interval=10000,
+        logger=logger,
     )
     # 实例化collator
     mlm_collator = MLMCollator(
@@ -279,6 +283,10 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
             data_file_path=valid_path,
             tokenizer=tokenizer,
             max_seq_length=max_seq_length,
+            split_name="valid",
+            progress_interval=10000,
+            read_interval=10000,
+            logger=logger,
         )
         # 实例化dataloader
         valid_dataloader = DataLoader(
@@ -302,6 +310,10 @@ def build_mlm_pretrain(config_dict, device_summary, resume=None, experiment_path
             data_file_path=test_path,
             tokenizer=tokenizer,
             max_seq_length=max_seq_length,
+            split_name="test",
+            progress_interval=10000,
+            read_interval=10000,
+            logger=logger,
         )
         # 实例化dataloader
         test_dataloader = DataLoader(

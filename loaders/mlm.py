@@ -93,17 +93,25 @@ def build_mlm_sample(token_chunk, tokenizer):
     return encoded_dict
 
 class MLMDataset(Dataset):
-    def __init__(self, data_file_path, tokenizer, max_seq_length):
+    def __init__(self, data_file_path, tokenizer, max_seq_length, split_name, progress_interval, read_interval, logger=None):
         """
         MLM的Dataset构造
         :param data_file_path: 数据集文件路径
         :param tokenizer: 分词器
         :param max_seq_length: 序列最长长度
+        :param split_name: 数据集名称 train, valid, test
+        :param read_interval: 每读取到多少条记录输出一次日志
+        :param progress_interval, 每处理多少条有效记录输出一次日志。
+        :param logger:
         """
         # 接收参数
         self.data_file_path = data_file_path
         self.tokenizer = tokenizer
         self.max_seq_length = max_seq_length
+        self.split_name = split_name
+        self.progress_interval = progress_interval
+        self.read_interval = read_interval
+        self.logger = logger
         self.samples = []
 
         # 校验参数
@@ -113,14 +121,31 @@ class MLMDataset(Dataset):
         if self.data_file_path.stat().st_size == 0:
             raise ValueError(
                 f"data_file_path: {self.data_file_path} 指向的文件是空的喵！")
+        if not type(self.read_interval) is int or self.read_interval <= 0:
+            raise ValueError(f"read_interval: {self.read_interval} 必须为正整数喵!")
+        total_records = 0
+        effective_records = 0
         with open(self.data_file_path, 'r', encoding='utf-8') as f:
-            if not any(line.strip() for line in f):
-                raise ValueError(
-                    f"data_file_path {self.data_file_path} 指向的文件是空的喵！")
+            for line in f:
+                if line.strip():
+                    total_records += 1
+                    effective_records += 1
+                else:
+                    total_records += 1
+                if total_records % self.read_interval == 0:
+                    self._log_info(f"已读取到 {total_records} 条记录，有效记录为 {effective_records} 条")
+        if effective_records == 0:
+            raise ValueError(f"data_file_path {self.data_file_path} 指向的文件是空的喵！")
         if not type(max_seq_length) is int or max_seq_length <= 2:
             raise ValueError(f"max_seq_length必须为大于2的整数喵！当前为: {max_seq_length}")
+        if not isinstance(self.split_name, str) or self.split_name not in ["train", "valid", "test"]:
+            raise ValueError(f"split_name: {self.split_name} 必须为 train, valid 或者 test 的字符串喵!")
+        if not type(self.progress_interval) is int or self.progress_interval <= 0:
+            raise ValueError(f"progress_interval: {self.progress_interval} 必须为正整数喵!")
 
         # 构造samples
+        process_record = 0
+        generated_samples = 0
         with open(self.data_file_path, 'r', encoding='utf-8') as f:
             for line_number, line in enumerate(f):
                 if not line.strip():
@@ -152,12 +177,23 @@ class MLMDataset(Dataset):
                         tokenizer=self.tokenizer,
                     )
                     self.samples.append(sample)
+                process_record += 1
+                generated_samples = len(self.samples)
+                if process_record % self.progress_interval == 0:
+                    self._log_info(f"正在处理 {split_name} 数据集: 总记录数: {total_records} 有效记录数: {effective_records} 已处理 {process_record} 条记录，生成了 {generated_samples} 条sample")
+            self._log_info(f"{split_name} 数据集已处理完毕喵~ 总记录数: {total_records} 有效记录数: {effective_records} 已处理 {process_record} 条记录，生成了 {generated_samples} 条sample")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         return self.samples[idx]
+
+    def _log_info(self, message):
+        if self.logger is None:
+            print(message)
+        else:
+            self.logger.info(message)
 
 class MLMCollator:
     def __init__(self, tokenizer, mlm_prob = 0.15):

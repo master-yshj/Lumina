@@ -10,8 +10,9 @@ from typing import Iterator
 DEFAULT_INPUT = Path(__file__).resolve().parent / (
     "zhwiki-latest-pages-articles.xml/zhwiki-latest-pages-articles.xml"
 )
-DEFAULT_FULL_OUTPUT = Path(__file__).resolve().parent / "full_zhwiki.jsonl"
-DEFAULT_BASE_OUTPUT = Path(__file__).resolve().parent / "base_zhwiki.jsonl"
+DEFAULT_FULL_OUTPUT = Path(__file__).resolve().parent / (""
+                                                         "full_zhwiki_original.jsonl")
+DEFAULT_BASE_OUTPUT = Path(__file__).resolve().parent / "base_zhwiki_original.jsonl"
 DEFAULT_TINY_OUTPUT = Path(__file__).resolve().parent / "tiny_zhwiki.jsonl"
 
 COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)

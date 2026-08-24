@@ -13,7 +13,7 @@ from loaders.mlm import MLMDataset, MLMCollator
 
 from torch.utils.data import DataLoader
 
-def build_mlm_test(config_dict, test_metrics_path):
+def build_mlm_test(config_dict, test_metrics_path, logger=None):
     train_config_path = config_dict["checkpoint"]["config_path"]
     from parse.parser import load_config
     train_config = load_config(train_config_path)
@@ -44,6 +44,10 @@ def build_mlm_test(config_dict, test_metrics_path):
         data_file_path=test_path,
         tokenizer=tokenizer,
         max_seq_length=max_seq_length,
+        split_name="test",
+        progress_interval=10000,
+        read_interval=10000,
+        logger=logger,
     )
     # 实例化collator
     mlm_collator = MLMCollator(
