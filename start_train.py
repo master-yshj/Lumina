@@ -99,7 +99,7 @@ def main():
             metrics_writer=test_metrics_writer,
             logger=logger,
         )
-        logger.info(test_summary)
+        logger.info(f"{test_summary}")
 
     logger.finish(train_summary)
 

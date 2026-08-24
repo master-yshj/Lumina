@@ -35,14 +35,17 @@ try:
     import metrics
     from metrics.registry import (SUPPORTED_METRICS, )
 
+    import Inference
+    from Inference.supported import (SUPPORTED_DECODING, )
+
 finally:
     if ROOT_STR in sys.path:
         sys.path.remove(ROOT_STR)
 
-INFERENCE_PARAMS_CUSTOM_DICT = {
+DECODING_PARAMS_CUSTOM_DICT = {
     "mlm_pretrain_inference": {
+        "name": "top_k_sampling",
         "top_k": 5,
-        "max_seq_length": 128,
     },
 }
 
@@ -57,7 +60,10 @@ CUSTOM_DICT = {
         "device": "cpu",
         "gpu_nums": 1,
     },
-    "inference": None,
+    "inference": {
+        "max_seq_length": 128,
+        "decoding": None,
+    }
 }
 
 def parse_args() -> Namespace:
@@ -221,21 +227,22 @@ def build_config(raw_dict, yaml_path):
     config_dict["checkpoint"]["config_path"] = path_dict["config_path"]
     print("yaml有关路径的参数已经绝对化了喵~")
     inference_dict = config_dict["inference"]
+    decoding_dict = inference_dict["decoding"]
     task = config_dict["task"]
     task = task.strip().casefold()
     if task not in SUPPORTED_TASKS:
         raise ValueError(f"config.task: {task} 这种任务类型不受支持喵! 支持的任务类型: {SUPPORTED_TASKS}")
-    if inference_dict is None:
-        config_dict["inference"] = INFERENCE_PARAMS_CUSTOM_DICT[task]
+    if decoding_dict is None:
+        config_dict["inference"]["decoding"] = DECODING_PARAMS_CUSTOM_DICT[task]
     else:
-        for inference_key, inference_value in inference_dict.items():
-            if inference_key in INFERENCE_PARAMS_CUSTOM_DICT[task] and inference_value is None:
-                config_dict["inference"][inference_key] = INFERENCE_PARAMS_CUSTOM_DICT[task][inference_key]
-            if not inference_key in INFERENCE_PARAMS_CUSTOM_DICT[task]:
-                raise ValueError(f"config.inference 中出现了非法字段喵: {inference_key}")
-        for custom_key, custom_value in INFERENCE_PARAMS_CUSTOM_DICT[task].items():
-            if custom_key not in inference_dict:
-                config_dict["inference"][custom_key] = custom_value
+        for decoding_key, decoding_value in decoding_dict.items():
+            if decoding_key in DECODING_PARAMS_CUSTOM_DICT[task] and decoding_value is None:
+                config_dict["inference"]["decoding"][decoding_key] = DECODING_PARAMS_CUSTOM_DICT[task][decoding_key]
+            if not decoding_key in DECODING_PARAMS_CUSTOM_DICT[task]:
+                raise ValueError(f"config.inference.decoding 中出现了非法字段喵: {decoding_key}")
+        for custom_key, custom_value in DECODING_PARAMS_CUSTOM_DICT[task].items():
+            if custom_key not in decoding_dict:
+                config_dict["inference"]["decoding"][custom_key] = custom_value
     print("yaml有关inference的参数已经默认填充了喵~")
     # 将规范化后的配置返回
     return config_dict
@@ -317,19 +324,35 @@ def validate_config(config_dict):
         raise ValueError(f"config.inference: {inference_dict} 必须为dict类型的喵! 现在的type: {type(inference_dict)}")
     if not inference_dict:
         raise ValueError(f"config.inference: {inference_dict} 不能为空喵!")
-    # 根据task类型进行硬编码校验
-    # mlm_pretrain_inference 字段
-    if task.strip().casefold() == "mlm_pretrain_inference":
-        if "top_k" not in inference_dict:
-            raise ValueError(f"config.inference: {inference_dict} 需要包含 top_k 字段喵!")
-        if "max_seq_length" not in inference_dict:
-            raise ValueError(f"config.inference: {inference_dict} 需要包含 max_seq_length 字段喵!")
-        top_k = inference_dict["top_k"]
+    # inference.max_seq_length 字段
+    max_seq_length = copy_dict["inference"]["max_seq_length"]
+    if not type(max_seq_length) is int or max_seq_length <= 0 or not isfinite(max_seq_length):
+        raise ValueError(f"config.inference.max_seq_length: {max_seq_length} 必须为有限正整数喵!")
+    # inference.decoding 字段
+    decoding_dict = inference_dict["decoding"]
+    if not isinstance(decoding_dict, dict):
+        raise ValueError(f"config.inference.decoding: {decoding_dict} 必须为dict类型的喵! 现在的type: {type(decoding_dict)}")
+    if not decoding_dict:
+        raise ValueError(f"config.inference.decoding 不能为空喵!")
+    if not "name" in decoding_dict:
+        raise ValueError(f"config.inference.decoding 中必须包含name字段喵!")
+    # 根据decoding的name进行硬编码
+    decoding_name = copy_dict["inference"]["decoding"]["name"]
+    if not isinstance(decoding_name, str):
+        raise ValueError(f"config.inference.decoding.name: {decoding_name} 必须为字符串类型的喵! 现在的type: {type(decoding_name)}")
+    if not decoding_name.strip():
+        raise ValueError(f"config.inference.decoding.name 不能为空喵!")
+    if not decoding_name.casefold() in SUPPORTED_DECODING:
+        raise ValueError(f"config.inference.decoding.name: {decoding_name} 该解码策略不受支持喵! 受支持的解码策略有: {SUPPORTED_DECODING}")
+    # 根据name进行decoding其他参数的硬编码
+    normalized_name = decoding_name.strip().casefold()
+    if normalized_name == "top_k_sampling":
+        if not "top_k" in decoding_dict:
+            raise ValueError(f"config.inference.decoding 中必须包含top_k字段喵!")
+        top_k = decoding_dict["top_k"]
         if not type(top_k) is int or top_k <= 0 or not isfinite(top_k):
-            raise ValueError(f"config.inference.top_k: {top_k} 必须为有限正整数喵!")
-        max_seq_length = inference_dict["max_seq_length"]
-        if not type(max_seq_length) is int or max_seq_length <= 0 or not isfinite(max_seq_length):
-            raise ValueError(f"config.inference.max_seq_length: {max_seq_length} 必须为有限正整数喵!")
+            raise ValueError(f"config.inference.decoding.top_k 必须为有限正整数喵!")
+
 
 def load_config(yaml_path):
     """

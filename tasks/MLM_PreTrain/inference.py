@@ -3,18 +3,17 @@ import torch
 from math import isfinite
 
 class MLMInference:
-    def __init__(self, model, tokenizer, top_k, max_seq_length):
-        if not type(top_k) is int or top_k <= 0 or not isfinite(top_k):
-            raise ValueError(f"top_k: {top_k} 必须为有限正整数喵!")
-        if not top_k <= len(tokenizer):
-            raise ValueError(f"top_k: {top_k} 必须小于等于vocab_size: {len(tokenizer)} 喵!")
+    def __init__(self, model, tokenizer, decoding_strategy, max_seq_length):
+        if not decoding_strategy:
+            raise ValueError(f"decoding_strategy 不能为空喵!")
+        if not (hasattr(decoding_strategy, "decode") and callable(decoding_strategy.decode)):
+            raise ValueError(f"decoding_strategy 必须有可调用的decode方法喵!")
         if not type(max_seq_length) is int or max_seq_length <= 0 or not isfinite(max_seq_length):
-            raise ValueError(f"max_seq_length: {max_seq_length} 必须为有限正整数喵!")
-
+            raise ValueError(f"max_seq_length: {max_seq_length} 必须为正整数喵!")
 
         self.model = model
         self.tokenizer = tokenizer
-        self.top_k = top_k
+        self.decoding_strategy = decoding_strategy
         self.max_seq_length = max_seq_length
 
 
@@ -109,41 +108,49 @@ class MLMInference:
         if not torch.isfinite(logits).all().item():
             raise ValueError(f"logits中的所有数值都必须有限喵!")
         mask_logits = logits[0,mask_positions,:]
-        pred_prob = torch.softmax(mask_logits, dim=-1)
-        top_scores, top_token_ids = torch.topk(pred_prob, k=self.top_k)
-        top_scores = top_scores.detach().cpu().tolist()
-        top_token_ids = top_token_ids.detach().cpu().tolist()
         predictions = []
-        for mask_position, single_top_scores, single_top_token_ids in zip(mask_positions, top_scores, top_token_ids):
-            int_top_token_ids = []
-            float_top_scores = []
-            for single_top_score, single_top_token_id in zip(single_top_scores, single_top_token_ids):
-                float_top_scores.append(float(single_top_score))
-                int_top_token_ids.append(int(single_top_token_id))
-            top_tokens = self.tokenizer.convert_ids_to_tokens(int_top_token_ids)
-            if not len(int_top_token_ids) == len(float_top_scores) == len(top_tokens) == self.top_k:
-                raise ValueError(f"int_top_token_ids的长度, float_top_scores的长度, top_tokens的长度, top_k 几个值的大小不一样喵!\n"
-                                 f"int_top_token_ids: {len(int_top_token_ids)}\n"
-                                 f"float_top_scores: {len(float_top_scores)}\n"
-                                 f"top_tokens: {len(top_tokens)}\n"
-                                 f"top_k: {self.top_k}\n")
-            mask_summary_dict = {
+        for mask_index, mask_position in enumerate(mask_positions):
+            single_mask_logits = mask_logits[mask_index]
+            strategy_summary = self.decoding_strategy.decode(single_mask_logits)
+            if not isinstance(strategy_summary, dict):
+                raise ValueError(f"strategy_summary 必须为dict类型的喵!")
+            if not "selected_token_id" in strategy_summary:
+                raise ValueError(f"strategy_summary 必须包含 selected_token_id 字段喵!")
+            prediction_summary = {
                 "position": mask_position,
-                "top_tokens": top_tokens,
-                "top_token_ids": int_top_token_ids,
-                "top_scores": float_top_scores,
+                "strategy_summary": strategy_summary,
             }
-            predictions.append(mask_summary_dict)
+            predictions.append(prediction_summary)
         if not len(predictions) == len(mask_positions):
             raise ValueError(f"模型预测结果数量与最初的[MASK]数量不一致喵!\n"
                              f"predictions: {len(predictions)}\n"
                              f"mask_positions: {len(mask_positions)}\n")
+        selected_tokens = []
+        for idx, prediction in enumerate(predictions):
+            strategy_summary = prediction["strategy_summary"]
+            selected_token_id = strategy_summary["selected_token_id"]
+            selected_token = self.tokenizer.convert_ids_to_tokens([selected_token_id])[0]
+            predictions[idx]["selected_token"] = selected_token
+            selected_tokens.append(selected_token)
+
+        filled_tokens = tokens.copy()
+        pos_idx = 0
+        for idx, token in enumerate(tokens):
+            if token == self.tokenizer.mask_token:
+                filled_tokens[idx] = predictions[pos_idx]["selected_token"]
+                pos_idx += 1
+            else:
+                pass
+        result_text = self.tokenizer.decode(filled_tokens)
+
         predictions_summary = {
             "text": text,
             "tokens": tokens,
             "mask_positions": mask_positions,
             "predictions": predictions,
+            "result_text": result_text,
         }
+
         return predictions_summary
 
 

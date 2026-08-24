@@ -1,7 +1,9 @@
+from copy import deepcopy
 from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
 from models.Transformer.modeling.registry import MODEL_REGISTRY
 from tasks.MLM_PreTrain.mlm import MLMTask
 from tasks.MLM_PreTrain.inference import MLMInference
+from Inference.decoding.registry import DECODING_REGISTRY
 
 def build_mlm_inference(config_dict):
     train_config_path = config_dict["checkpoint"]["config_path"]
@@ -64,13 +66,19 @@ def build_mlm_inference(config_dict):
     )
     # 接收inference参数
     inference_dict = config_dict["inference"]
-    top_k = inference_dict["top_k"]
+    decoding_dict = inference_dict["decoding"]
+    decoding_name = decoding_dict["name"].strip().casefold()
+    copy_decoding_dict = deepcopy(decoding_dict)
+    del copy_decoding_dict["name"]
+    strategy_params = copy_decoding_dict
+    decoding_class = DECODING_REGISTRY[decoding_name]
+    decoding_strategy = decoding_class(**strategy_params)
     max_seq_length = inference_dict["max_seq_length"]
     # 构造MLMInference
     mlm_inference = MLMInference(
         model=model,
         tokenizer=tokenizer,
-        top_k=top_k,
+        decoding_strategy=decoding_strategy,
         max_seq_length=max_seq_length,
     )
 

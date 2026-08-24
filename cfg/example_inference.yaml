@@ -10,5 +10,7 @@ cuda:
   gpu_nums: 1
 
 inference:
-  top_k: 5
   max_seq_length: 128
+  decoding:
+    name: top_k_sampling
+    top_k: 5

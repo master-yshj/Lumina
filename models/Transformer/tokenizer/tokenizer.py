@@ -127,6 +127,22 @@ class ExampleTokenizer:
         is_chinese = any(start <= codepoint <= end for start,end in CHINESE_RANGES)
         return is_chinese
 
+    def _is_chinese_token(self, token):
+        char = token[0]
+        if self._is_chinese_char(char):
+            is_chinese_token = True
+        else:
+            is_chinese_token = False
+        return is_chinese_token
+
+    def _is_punctuation_token(self, token):
+        char = token[0]
+        if self._is_punctuation(char):
+            is_punctuation_token = True
+        else:
+            is_punctuation_token = False
+        return is_punctuation_token
+
     def _add_spaces_around_chinese_chars(self, text):
         """
         将用户输入的文本里面的中文两侧加上空格
@@ -457,6 +473,38 @@ class ExampleTokenizer:
         encoded_dict["token_type_ids"] = token_type_ids
         encoded_dict["attention_mask"] = attention_mask
         return encoded_dict
+
+    def decode(self, tokens, skip_special_tokens=True):
+        if not isinstance(tokens, list):
+            raise ValueError(f"tokens 必须为list类型的喵! 现在的type: {type(tokens)}")
+        if not tokens:
+            raise ValueError(f"tokens 不能为空喵!")
+        if not all(isinstance(token, str) for token in tokens):
+            raise ValueError(f"tokens 中的每个token都必须为字符串类型的喵!")
+        if not isinstance(skip_special_tokens, bool):
+            raise ValueError(f"skip_special_tokens 必须为bool类型的喵! 现在的type: {type(skip_special_tokens)}")
+
+        result = ""
+        for token in tokens:
+            if token in [f"{self.cls_token}", f"{self.sep_token}", f"{self.pad_token}", f"{self.mask_token}"]:
+                if skip_special_tokens:
+                    continue
+                else:
+                    pass
+            if token.startswith("##"):
+                processed_token = token[2:]
+                result += processed_token
+            else:
+                if self._is_chinese_token(token):
+                    result += token
+                elif self._is_punctuation_token(token):
+                    result += token
+                else:
+                    if result:
+                        result += " " + token
+                    else:
+                        result += token
+        return result
 
 class QATokenizer(ExampleTokenizer):
     def _clean_text_with_offsets(self, text):

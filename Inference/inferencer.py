@@ -32,6 +32,4 @@ class Inferencer:
         if not prediction:
             raise ValueError(f"prediction 不能为空喵!")
 
-        self._log_info(f"Inference output: {prediction}")
-
         return prediction

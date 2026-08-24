@@ -1,0 +1,1 @@
+from .decoding.registry import SUPPORTED_DECODING
