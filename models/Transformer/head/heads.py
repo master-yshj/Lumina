@@ -56,3 +56,50 @@ class BertMLMHead(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         logits = self.vocab_projection(hidden_states)
         return logits
+
+class BertQAHead(nn.Module):
+    def __init__(self, hidden_size):
+        """
+        Bert的QA任务头
+        """
+        super(BertQAHead, self).__init__()
+
+        if not type(hidden_size) is int or hidden_size <= 0:
+            raise ValueError(f"hidden_size: {hidden_size} 必须为正整数喵!")
+
+        self.hidden_size = hidden_size
+
+        self.logits_projection = nn.Linear(self.hidden_size, 2)
+
+    def forward(self, hidden_states):
+        """
+        BertQAHead的前向传播方法
+        :param hidden_states: 三维浮点 Tensor，[B,S,H]
+        :return:
+        """
+        if not isinstance(hidden_states, torch.Tensor):
+            raise ValueError(f"hidden_states的类型必须为Tensor喵！现在的type是：{type(hidden_states)}")
+        if not hidden_states.is_floating_point():
+            raise ValueError(f"hidden_states的类型必须为浮点Tensor喵！现在dtype是：{hidden_states.dtype}")
+        if not hidden_states.dim() == 3:
+            raise ValueError(f"hidden_states的类型必须为三维Tensor喵！")
+        batch_size = hidden_states.size(0)
+        seq_length = hidden_states.size(1)
+        if not type(batch_size) is int or batch_size <= 0:
+            raise ValueError(f"hidden_states的batch_size必须为正整数喵！")
+        if not type(seq_length) is int or seq_length <= 0:
+            raise ValueError(f"hidden_states的seq_length必须为正整数喵！")
+        if not hidden_states.size(2) == self.hidden_size:
+            raise ValueError(f"hidden_states的最后一维必须和hidden_size的大小一致喵！")
+
+        logits = self.logits_projection(hidden_states)      # [B,S,2]
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+        logits_dict = {
+            "start_logits": start_logits,
+            "end_logits": end_logits,
+        }
+
+        return logits_dict

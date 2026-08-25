@@ -1,4 +1,4 @@
-from metrics.base import Metric
+from metrics.core.base import Metric
 
 class MetricCollection(Metric):
     def __init__(self, metrics):

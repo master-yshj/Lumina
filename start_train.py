@@ -6,15 +6,15 @@ from parse.parser import parse_args, load_config, normalize_resume_path
 from tasks.registry import TASK_BUILDER_REGISTRY
 from experiments import create_experiments_directories, save_config_snapshot, resolve_resume_experiment_paths
 from logger.logger import RunLogger
-from metrics.plotter import plot_csv_metrics
-from device import check_device, get_memory_summary
+from metrics.output.plotter import plot_csv_metrics
+from device import check_device
 from Tester.test_runner import run_test
 
 def main():
     args = parse_args()
     config_path = args.config
     resume = args.resume
-    config_dict = load_config(config_path)
+    config_dict = load_config(config_path, resume)
 
     # resume 实验目录复用
     resume_path = normalize_resume_path(resume)

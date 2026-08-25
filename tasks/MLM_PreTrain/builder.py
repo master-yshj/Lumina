@@ -7,8 +7,8 @@ from tasks.MLM_PreTrain.mlm import MLMTask
 from models.Transformer.optimizer.registry import OPTIMIZER_REGISTRY
 from models.Transformer.scheduler.registry import SCHEDULER_REGISTRY
 from metrics.registry import METRIC_REGISTRY
-from metrics.collection import MetricCollection
-from metrics.writer import MetricWriter
+from metrics.core.collection import MetricCollection
+from metrics.output.writer import MetricWriter
 from Trainer.trainer import Trainer
 from Trainer.checkpoint import load_checkpoint, load_checkpoint_state
 

@@ -1,6 +1,6 @@
 import torch
 
-from metrics.base import Metric
+from metrics.core.base import Metric
 
 class TokenAccuracy(Metric):
     def __init__(self, ignore_index=-100):

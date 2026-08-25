@@ -106,6 +106,7 @@ CUSTOM_DICT = {
         "attention_dropout": 0.1,
         "hidden_dropout": 0.1,
         "layer_norm_eps": 1.0e-12,
+        "backbone_path": None,
     },
     "tokenizer": {
         "type": "ExampleTokenizer",
@@ -462,6 +463,11 @@ def build_config(raw_dict, yaml_path):
         "valid_path": valid_path,
         "test_path": test_path,
     }
+    backbone_path = config_dict["model"]["backbone_path"]
+    if backbone_path is not None:
+        path_dict.update({"backbone_path": pathlib.Path(backbone_path)})
+    else:
+        pass
     # 把里面的相对路径全部转化为绝对路径
     path_dict = relative_to_absolute_path_full_dict(path_dict,base_path)
     config_dict["model"]["model_path"] = path_dict["model_path"]
@@ -470,11 +476,13 @@ def build_config(raw_dict, yaml_path):
     config_dict["dataset"]["train_path"] = path_dict["train_path"]
     config_dict["dataset"]["valid_path"] = path_dict["valid_path"]
     config_dict["dataset"]["test_path"] = path_dict["test_path"]
+    if backbone_path is not None:
+        config_dict["model"]["backbone_path"] = path_dict["backbone_path"]
     print("yaml有关路径的参数已经绝对化了喵~")
     # 将规范化后的配置返回
     return config_dict
 
-def validate_config(config_dict):
+def validate_config(config_dict, resume=None):
     """
     对配置里面的参数进行合理性验证，使用硬编码
     :param config_dict:
@@ -817,6 +825,26 @@ def validate_config(config_dict):
     layer_norm_eps = copy_dict["model"]["layer_norm_eps"]
     if not type(layer_norm_eps) in (float, int) or not layer_norm_eps > 0 or not isfinite(layer_norm_eps):
         raise ValueError(f"config.model.layer_norm_eps: {layer_norm_eps} 的值必须为有限正数喵!")
+    # model.backbone_path 字段
+    backbone_path = copy_dict["model"]["backbone_path"]
+    if backbone_path is not None:
+        if resume is not None:
+            raise ValueError(
+                "resume 和 config.model.backbone_path 不能同时指定喵！"
+                "resume 用于恢复完整训练，"
+                "backbone_path 用于初始化 QA Backbone。"
+            )
+        if not isinstance(backbone_path, pathlib.Path):
+            raise ValueError(f"config.model.backbone_path: {backbone_path} 必须为pathlib.Path类型的喵! 现在的type: {type(backbone_path)}")
+        if not backbone_path.is_absolute():
+            raise ValueError(f"config.model.backbone_path: {backbone_path} 还没有绝对化喵!")
+        if not backbone_path.suffix.casefold() == ".pt":
+            raise ValueError(f"config.model.backbone_path: {backbone_path} 必须指向一个pt文件喵!")
+        if not backbone_path.exists():
+            raise ValueError(f"config.model.backbone_path: {backbone_path} 该路径不存在喵!")
+        if not backbone_path.is_file():
+            raise ValueError(f"config.model.backbone_path: {backbone_path} 该路径并未指向一个文件喵!")
+
     # hidden_size 与 num_heads 的跨字段约束
     if not hidden_size % num_heads == 0:
         raise ValueError(f"config.model.hidden_size: {hidden_size}\n"
@@ -1270,15 +1298,16 @@ def validate_config(config_dict):
                     raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
 
 
-def load_config(yaml_path):
+def load_config(yaml_path, resume=None):
     """
     加载配置，通过yaml路径读取yaml，创建config，并对其校验
     :param yaml_path:
+    :param resume:
     :return: config_dict:
     """
     yaml_dict = load_yaml(yaml_path)
     config_dict = build_config(yaml_dict, yaml_path)
-    validate_config(config_dict)
+    validate_config(config_dict, resume)
     return config_dict
 
 def normalize_resume_path(resume):

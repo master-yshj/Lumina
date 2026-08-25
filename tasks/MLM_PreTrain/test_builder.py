@@ -1,13 +1,10 @@
-import pathlib
-import yaml
-
 from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
 from models.Transformer.modeling.registry import MODEL_REGISTRY
 from models.Transformer.losses.registry import LOSS_REGISTRY
 from models.Transformer.losses.losses import WeightedLoss
 from metrics.registry import METRIC_REGISTRY
-from metrics.collection import MetricCollection
-from metrics.writer import MetricWriter
+from metrics.core.collection import MetricCollection
+from metrics.output.writer import MetricWriter
 from tasks.MLM_PreTrain.mlm import MLMTask
 from loaders.mlm import MLMDataset, MLMCollator
 
