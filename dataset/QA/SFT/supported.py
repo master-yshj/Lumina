@@ -1,1 +1,1 @@
-SUPPORTED_SFT_DATASET = {'cmrc2018_dev','cmrc2018_train','cmrc2018_trial'}
+SUPPORTED_SFT_DATASET = {'tiny_cmrc2018','base_cmrc2018','full_cmrc2018'}

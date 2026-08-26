@@ -1,6 +1,4 @@
-import readline
-
-from parse.inference_parser import parse_args, load_config
+from parse.copy.inference_parser import parse_args, load_config
 from tasks.registry import TASK_BUILDER_REGISTRY
 from logger.logger import RunLogger
 from experiments import create_inference_directories

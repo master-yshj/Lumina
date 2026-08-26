@@ -82,7 +82,7 @@ LOSS_ITEM_CUSTOM_DICT = {
 }
 
 METRIC_ITEM_CUSTOM_DICT = {
-    "type": "REQUIRED",
+    "type": "TokenAccuracy",
     "params": {
         "ignore_index": -100,
     },
@@ -359,7 +359,9 @@ def check_and_add_config(config,template,loss_completed=False,key="config"):
                     if config[template_key] is None:
                         raise ValueError(f"{template_key} 为必填字段喵!")
                 if type(template_value) in (dict, list):
-                    if config[template_key] is not None:
+                    if key.startswith("config.metrics") and template_key == "params":
+                        pass
+                    elif config[template_key] is not None:
                         if isinstance(template_value, dict):
                             if isinstance(config[template_key], dict):
                                 check_and_add_config(config[template_key],template_value,True,key+"."+template_key)
@@ -377,6 +379,7 @@ def check_and_add_config(config,template,loss_completed=False,key="config"):
                         config[template_key] = template_value
                     else:
                         pass
+
 
         # 当template为list时
         if isinstance(template, list):
@@ -1204,8 +1207,6 @@ def validate_config(config_dict, resume=None):
         metric_params = metric["params"]
         if not isinstance(metric_params, dict):
             raise ValueError(f"config.metrics.train[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
-        if not metric_params:
-            raise ValueError(f"config.metrics.train[{idx}].params 不能为空喵!")
         # 根据metric的type进行硬编码校验
         # TokenAccuracy
         if metric_type.strip().casefold() == "tokenaccuracy":
@@ -1216,6 +1217,14 @@ def validate_config(config_dict, resume=None):
                 raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
             if not ignore_index == -100:
                 raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+        # ExactMatch
+        elif metric_type.strip().casefold() == "exact_match":
+            if metric_params:
+                raise ValueError(f"exact_match 这一metric的params必须为空喵!")
+        # CharacterF1
+        elif metric_type.strip().casefold() == "character_f1":
+            if metric_params:
+                raise ValueError(f"character_f1 这一metric的params必须为空喵!")
     # metrics.valid 字段
     metrics_valid = copy_dict["metrics"]["valid"]
     if not isinstance(metrics_valid, list):
@@ -1241,8 +1250,6 @@ def validate_config(config_dict, resume=None):
         metric_params = metric["params"]
         if not isinstance(metric_params, dict):
             raise ValueError(f"config.metrics.valid[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
-        if not metric_params:
-            raise ValueError(f"config.metrics.valid[{idx}].params 不能为空喵!")
         # 根据metric的type进行硬编码校验
         # TokenAccuracy
         if metric_type.strip().casefold() == "tokenaccuracy":
@@ -1253,6 +1260,14 @@ def validate_config(config_dict, resume=None):
                 raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
             if not ignore_index == -100:
                 raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+        # ExactMatch
+        elif metric_type.strip().casefold() == "exact_match":
+            if metric_params:
+                raise ValueError(f"exact_match 这一metric的params必须为空喵!")
+        # CharacterF1
+        elif metric_type.strip().casefold() == "character_f1":
+            if metric_params:
+                raise ValueError(f"character_f1 这一metric的params必须为空喵!")
     # metrics.test 字段
     if test_enabled:
         metrics_test = copy_dict["metrics"]["test"]
@@ -1284,8 +1299,6 @@ def validate_config(config_dict, resume=None):
             if not isinstance(metric_params, dict):
                 raise ValueError(
                     f"config.metrics.test[{idx}].params: {metric_params} 必须为dict类型的喵! 现在的type: {type(metric_params)}")
-            if not metric_params:
-                raise ValueError(f"config.metrics.test[{idx}].params 不能为空喵!")
             # 根据metric的type进行硬编码校验
             # TokenAccuracy
             if metric_type.strip().casefold() == "tokenaccuracy":
@@ -1296,7 +1309,14 @@ def validate_config(config_dict, resume=None):
                     raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
                 if not ignore_index == -100:
                     raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
-
+            # ExactMatch
+            elif metric_type.strip().casefold() == "exact_match":
+                if metric_params:
+                    raise ValueError(f"exact_match 这一metric的params必须为空喵!")
+            # CharacterF1
+            elif metric_type.strip().casefold() == "character_f1":
+                if metric_params:
+                    raise ValueError(f"character_f1 这一metric的params必须为空喵!")
 
 def load_config(yaml_path, resume=None):
     """

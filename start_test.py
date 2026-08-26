@@ -1,5 +1,5 @@
 
-from parse.test_parser import parse_args, load_config
+from parse.copy.test_parser import parse_args, load_config
 from logger.logger import RunLogger
 from device import check_device
 from tasks.registry import TASK_BUILDER_REGISTRY

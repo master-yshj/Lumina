@@ -8,23 +8,25 @@
 
 本文档面向后续接手本项目的 AI。开始任何开发、审查或答疑前，必须先阅读本文档，并以磁盘中的最新代码为准。
 
-项目当前处于逐步实现最小 MLM 预训练链路的阶段。用户希望亲自编写代码，AI 的主要职责是：先完整审查，再解释下一步目标、接口、张量形状、职责边界和检查标准；除非用户明确要求，否则不要直接给出完整实现代码，也不要擅自编辑用户正在学习实现的模块。
+项目已经跨过最早期的最小 MLM 骨架阶段，当前磁盘包含 MLM、部分 QA、训练基础设施和分层 Metrics；最新状态是完成两个通用文本指标及 Registry 后暂停开发。用户希望亲自编写代码，AI 的主要职责是：先完整审查，再解释下一步目标、接口、张量形状、职责边界和检查标准；除非用户明确索取，否则不要直接给出完整实现代码；没有当前请求中的代码修改安全词和明确范围时，绝不编辑代码。
 
 ### 1.1 最高优先级回答与授权协议
 
 完整协议见根目录 `AI回答方式规范.md`，本文不得另行解释或降低标准：
 
+> **代码修改安全词只有一个：** `直接修改代码完成任务`。只有用户在**当前请求**中完整、连续、原样说出这十个字，并同时明确代码任务和代码范围，才允许修改代码。历史消息、文档引用、AI 复述、缺字、换词、近义表达，以及“下一步”“继续”“实现”“帮我改”“你直接做”等都不构成授权。
+
 - “下一步”可能表示当前步骤没讲清楚。必须先检查磁盘实现和此前说明是否完整，不得机械推进。
 - 说明实现任务时，必须给出完整执行流程、直接数据流、所需库/函数/方法及其用法、完成标准和复审后的真正下一步；默认不直接给完整代码或伪代码。
-- 用户表示写好后，必须重新读取磁盘，依次列出“必须修改”“建议修改”“已正确”。存在必须修改项时停留当前步骤。
-- 只有当前请求完整、连续、原样包含“直接修改代码完成任务”并明确范围，才允许修改代码；“修改”“实现”“帮我改”“下一步”等其他表达均无效。
-- 文档、配置、数据和命令需要分别明确授权；任何授权都不得扩大范围。
+- 用户表示写好后，必须重新读取磁盘，并按“结论、必须修改、建议修改、已正确、数据流与参数流、当前完成标准、下一步唯一最小动作”的顺序回答。存在必须修改项时停留当前步骤。
+- 文档、配置、数据、训练、测试、推理、依赖安装及其他命令需要分别明确授权；代码安全词不会自动授权这些操作，任何授权都不得扩大范围。
+- 用户只授权文档修改时，不得顺带修改代码、配置、数据或运行任务。
 
 ## 2. 强制回答方式
 
 - 默认使用中文回答。
 - 不要直接给完整代码；优先说明思路、执行顺序、输入输出、形状变化、错误原因和修改方向。
-- 用户提交代码后，先指出“已正确”“必须修改”“建议修改”，并解释原因。
+- 用户提交代码后必须重新读取磁盘，并按“结论、必须修改、建议修改、已正确、数据流与参数流、当前完成标准、下一步唯一最小动作”的顺序回答。
 - 不要一次规划过多未来功能。每次只推进当前链路中的一个清晰步骤。
 - 必须明确告诉用户本步代码应写在哪个现有文件；确需新增文件时，先说明为什么现有文件不能承载该职责。
 - 不要把建议说成已经实现。必须明确区分：当前磁盘实现、用户尚未保存的代码、建议方案、未来计划。
@@ -59,23 +61,21 @@
 
 ## 4. 项目目标
 
-项目是一个用于教学的 NLP 训练框架。当前主要目标是先打通最小 Tiny-BERT MLM 预训练链路，随后再逐步扩展验证、调度器、断点恢复等能力。
-
-当前目标链路：
+项目是用于教学的 NLP 训练框架，不是生产级通用平台。当前正式端到端目标链路为：
 
 ```text
-命令行参数
-→ YAML 加载、默认值填充、路径规范化、配置校验
-→ Tokenizer
-→ MLMDataset
-→ MLMCollator
-→ DataLoader
-→ TinyBertForMaskedLM
-→ CrossEntropyLoss
-→ MLMTask
-→ AdamW
-→ Trainer.fit
+中文维基语料
+→ WordPiece Tokenizer
+→ 动态 MLM Mask
+→ Tiny-BERT MLM 预训练
+→ Backbone 权重迁移
+→ CMRC2018 抽取式 QA 微调
+→ QA Test / Inference
+→ Span 还原原文答案
+→ EM / F1
 ```
+
+当前不做 UI、Dashboard、Agent、RAG、多模态、RLHF、GPT/SFT、自回归生成、多机、FSDP 或 DeepSpeed。CPU、单卡和后续单机多卡 DDP 属于第一版目标能力，但实现顺序必须服从主链依赖。
 
 各层职责必须保持清晰：
 
@@ -106,92 +106,98 @@
 - `debug.py`：调试用途，不是正式训练入口。
 - `README.md`：项目和环境说明。
 
-## 6. 当前实现进度
+## 6. 当前实现进度（2026-08-26，以当前磁盘和最新交接为准）
 
-已经实现或基本实现：
+当前已经静态具备：
 
-- WordPiece 风格 Tokenizer；
-- MLM 文本切句、分块、Dataset；
-- 动态 Padding 和 80/10/10 MLM Collator；
-- Tiny-BERT Encoder 与 MLM Head；
-- 输入输出 Embedding 权重共享；
-- 自定义交叉熵 Loss；
-- `MLMTask`，已将 logits 和 labels 展平后计算 Loss；
-- 自定义 AdamW；
-- Trainer 的单步训练和按 Iteration 的 `fit()` 骨架。
+- 新 YAML Schema、Parser、路径处理、配置校验和训练/测试/推理入口；
+- WordPiece Tokenizer、QA Offset Mapping、MLM Dataset/Collator；
+- Tiny-BERT Encoder、MLM Head/Model、QA Head/Model；
+- CrossEntropyLoss、WeightedLoss、AdamW、StepLR；
+- MLM Task、Builder、Test 和 Inference 相关模块；
+- QA Dataset/Collator、QATask、QA Builder、Backbone 初始化与 Resume 互斥配置语义；
+- Trainer 梯度累积、Validation、Early Stopping、训练进度、Logger 和 Checkpoint 接线；
+- 实验目录和配置快照；
+- Metrics 的 `core/implementations/output` 分层；
+- `TokenAccuracy`、通用 `ExactMatch`、通用 `CharacterF1` 及 Registry 注册。
 
-当前已知问题：
+最新完成内容：
 
-- `Trainer/trainer.py` 中 `fit()` 的日志 Loss 已是 Python 数值，却仍调用 `loss.isfinite()`；应使用已导入的 `math.isfinite`。
-- Collator 可能小概率生成整个 Batch 都没有监督位置，进而使平均交叉熵产生 `NaN`；尚未决定在哪一层处理。
-- Scheduler、Validation、Test、Checkpoint、Resume、AMP、梯度累积、梯度裁剪和 DDP 尚未接入。
-- 正式训练入口尚未创建。
-- 当前配置结构与已经实现的 MLM 组件接口不完全一致。
+```text
+Metrics 目录分层
+→ ExactMatch
+→ CharacterF1
+→ Metrics Registry
+```
 
-## 7. 当前主要任务：先修改配置链路
+`ExactMatch` 和 `CharacterF1` 的通用输入契约为：
 
-用户尚未开始本轮配置修改。下一阶段必须按以下顺序推进，不能跳到训练入口：
+```text
+predictions: list[str]
+references: list[list[str]]
+```
 
-1. 修改 `parse/parser.py` 中的 `CUSTOM_DICT`。
-2. 修改 `cfg/example.yaml` 与新模板对齐。
-3. 修改 `relative_to_absolute_path_full_dict()` 的路径键。
-4. 重写 `validate_config()` 中与旧结构绑定的校验。
-5. 校验配置字段和组件构造参数一一对应。
-6. 修复已记录的 Trainer 有限性检查问题。
-7. 创建独立的正式训练入口。
-8. 使用命令行组装整条 MLM 链路。
-9. 最后统一做最小 Iteration 的前向、反向和参数更新验证。
+它们不负责 QA Span 解码，不读取 `start_logits`、`end_logits`、`offset_mapping` 或 `context`。QA 任务适配层未来应先生成标准化的 `predictions/references`。
 
-不能先写入口再补配置，因为最终入口必须由命令行和 YAML 驱动。
+当前验证状态：
 
-## 8. 推荐的新配置结构
+- 最新 Metrics 改造只完成源码和静态审查，没有单元测试或组合运行证据；
+- 当前 Trainer、Checkpoint/Resume、QA 和 Metrics 没有统一的最新端到端运行证据；
+- 静态审查、Linter 和运行验证必须分别报告；
+- 未真实运行的能力不得称为“已经运行通过”。
 
-目标顶层结构：
+## 7. 当前暂停状态与唯一后续方向
+
+用户当前要求暂停后续开发。不得自动继续修改代码、运行测试、训练或推理。
+
+如果用户后续重新要求推进，默认先做：
+
+```text
+重新读取 Metrics 文件和所有导入方
+→ 核对 Registry 实际键名
+→ 设计 predictions/references 指标上下文
+→ 输出静态影响分析
+→ 等待当前请求中的代码修改安全词和明确代码范围
+```
+
+当前不要直接进入：
+
+- Trainer 大规模指标接入；
+- QA Span 解码；
+- QA Test / Inference；
+- 长文本滑动窗口；
+- 端到端 EM/F1；
+- 未经单独授权的训练、测试或推理运行。
+
+## 8. 当前配置结构与参数所有权
+
+当前顶层配置以 `parse/parser.py` 的 `CUSTOM_DICT` 和当前 YAML 为准，主要包含：
 
 ```text
 name
 seed
-device
 task
+model
 tokenizer
 dataset
 dataloader
-model
-loss
+losses
 optimizer
+scheduler
 train
+valid
+test
+cuda
+metrics
 ```
 
-字段与消费位置：
+参数由真正消费它的模块所有：Tokenizer 消费分词参数；Dataset/Collator 消费数据和 Mask 参数；Model 消费网络结构参数；Loss、Optimizer、Scheduler 消费各自参数；Trainer 消费训练、验证和梯度累积参数；入口管理实验名称、种子、路径和 Builder 选择。不得根据本文件中的旧设计猜测接口，必须读取当前 Parser、YAML、Registry、构造函数和调用方。
 
-- `name`：实验名称。
-- `seed`：入口设置随机种子。
-- `device`：传给 Trainer。
-- `task`：通过 `SUPPORTED_TASKS` 校验并选择 Task。
-- `tokenizer.*`：构造 `ExampleTokenizer`。
-- `dataset.train_path`、`dataset.max_seq_length`：构造 `MLMDataset`。
-- `dataset.mlm_prob`：构造 `MLMCollator`。
-- `dataloader.*`：构造 PyTorch DataLoader。
-- `model.*`：构造 `TinyBertForMaskedLM`。
-- `loss.*`：构造 `CrossEntropyLoss`。
-- `optimizer.*`：构造 AdamW。
-- `train.total_iters`、`train.log_every_iters`：传给 `Trainer.fit()`。
+Tokenizer 派生参数仍不应在 YAML 中重复声明：
 
-Tokenizer 派生参数不写入 YAML：
-
-- `tokenizer.vocab_size` → 模型 `vocab_size`；
+- `len(tokenizer)` → 模型 `vocab_size`；
 - `tokenizer.pad_token_id` → 模型 `padding_idx`；
-- 其他特殊 Token ID → Collator。
-
-当前应移除的旧配置：
-
-- `model.model_path`；
-- `modules`；
-- `cuda.gpu_nums`；
-- 顶层 `dataset_path`；
-- 未实现的 `accumulation_steps`；
-- 未接入的 `scheduler`；
-- 尚未实现的 `valid` 和 `test`。
+- 特殊 Token ID → Collator。
 
 ## 9. 配置必须满足的跨字段约束
 

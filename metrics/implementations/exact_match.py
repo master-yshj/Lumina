@@ -1,4 +1,5 @@
 from metrics.core.base import Metric
+from metrics.process.inputs import process_predictions_references
 
 class ExactMatch(Metric):
     def __init__(self):
@@ -6,19 +7,14 @@ class ExactMatch(Metric):
         self.exact_matched = 0
         self.count = 0
 
-    def update(self, predictions, references):
-        if not isinstance(predictions, list):
-            raise ValueError(f"predictions 必须为list类型的喵! 现在的type: {type(predictions)}")
-        if not predictions:
-            raise ValueError(f"predictions 不能为空喵!")
-        if not isinstance(references, list):
-            raise ValueError(f"references 必须为list类型的喵! 现在的type: {type(references)}")
-        if not references:
-            raise ValueError(f"references 不能为空喵!")
-        if not len(predictions) == len(references):
-            raise ValueError(f"predictions 和 references 的长度必须一致喵!\n"
-                             f"predictions: {len(predictions)}\n"
-                             f"references: {len(references)}")
+    def process(self, **context):
+        process_dict = process_predictions_references(**context)
+        return process_dict
+
+    def update(self, **context):
+        process_dict = self.process(**context)
+        predictions = process_dict["predictions"]
+        references = process_dict["references"]
         for idx, prediction in enumerate(predictions):
             if not isinstance(prediction, str):
                 raise ValueError(f"predictions[{idx}]: {prediction} 必须为字符串类型的喵! 现在的type: {type(prediction)}")
@@ -26,7 +22,7 @@ class ExactMatch(Metric):
             if not isinstance(reference_list, list):
                 raise ValueError(f"references[{idx}]: {reference_list} 必须为list类型的喵! 现在的type: {type(reference_list)}")
             if not reference_list:
-                raise ValueError(f"references[{idx}] 不能为空喵! 即: predictions[{idx}]: {prediction} 至少要有一个preference喵!")
+                raise ValueError(f"references[{idx}] 不能为空喵! 即: predictions[{idx}]: {prediction} 至少要有一个reference喵!")
             for r_idx, reference in enumerate(reference_list):
                 if not isinstance(reference, str):
                     raise ValueError(f"references[{idx}][{r_idx}]: {reference} 必须为字符串类型的喵! 现在的type: {type(reference)}")

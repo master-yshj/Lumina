@@ -45,7 +45,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
         logger=logger,
     )
     # 实例化collator
-    mlm_collator = QACollator(
+    qa_collator = QACollator(
         tokenizer=tokenizer,
     )
     # 接收dataloader参数
@@ -63,7 +63,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,
-        collate_fn=mlm_collator,
+        collate_fn=qa_collator,
     )
 
     # 接收model参数
@@ -181,7 +181,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
     test_metrics_writer = MetricWriter(test_metrics_path, test_fieldnames)
 
     # 实例化task
-    mlm_task = QATask(
+    qa_task = QATask(
         model=model,
         loss_fn=loss_fn,
     )
@@ -210,7 +210,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
     optimizer_class = OPTIMIZER_REGISTRY[optimizer_type]
     # 实例化optimizer
     optimizer = optimizer_class(
-        mlm_task.parameters(),
+        qa_task.parameters(),
         lr=lr,
         weight_decay=weight_decay,
         betas=betas,
@@ -252,7 +252,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
         scheduler=scheduler,
         device=cuda_device,
         device_summary=device_summary,
-        task=mlm_task,
+        task=qa_task,
         logger=logger,
         train_metric_collection=train_metric_collection,
         valid_metric_collection=valid_metric_collection,
@@ -264,7 +264,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
         checkpoint = load_checkpoint(resume)
         load_checkpoint_state(
             checkpoint=checkpoint,
-            task=mlm_task,
+            task=qa_task,
             optimizer=optimizer,
             scheduler=scheduler,
             trainer=trainer,
@@ -302,7 +302,7 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=False,
-            collate_fn=mlm_collator,
+            collate_fn=qa_collator,
         )
 
     # test.enabled 为True时接收valid参数，False时为None
@@ -328,13 +328,13 @@ def build_qa_sft(config_dict, device_summary, resume=None, experiment_paths=None
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=False,
-            collate_fn=mlm_collator,
+            collate_fn=qa_collator,
         )
 
     # 组装参数字典
     train_params_dict = {
         "trainer": trainer,
-        "task": mlm_task,
+        "task": qa_task,
         "train_dataloader": train_dataloader,
         "valid_dataloader": valid_dataloader,
         "test_dataloader": test_dataloader,

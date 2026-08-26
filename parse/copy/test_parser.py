@@ -214,7 +214,9 @@ def check_and_add_config(config,template,loss_completed=False,key="config"):
                     if config[template_key] is None:
                         raise ValueError(f"{template_key} 为必填字段喵!")
                 if type(template_value) in (dict, list):
-                    if config[template_key] is not None:
+                    if key.startswith("config.metrics") and template_key == "params":
+                        pass
+                    elif config[template_key] is not None:
                         if isinstance(template_value, dict):
                             if isinstance(config[template_key], dict):
                                 check_and_add_config(config[template_key],template_value,True,key+"."+template_key)
@@ -556,6 +558,14 @@ def validate_config(config_dict):
                 raise ValueError(f"ignore_index必须为整型的喵! 现在的type: {type(ignore_index)}")
             if not ignore_index == -100:
                 raise ValueError(f"token_accuracy这一metric的ignore_index必须为-100喵! 现在是: {ignore_index}")
+        # ExactMatch
+        elif metric_type.strip().casefold() == "exact_match":
+            if metric_params:
+                raise ValueError(f"exact_match 这一metric的params必须为空喵!")
+        # CharacterF1
+        elif metric_type.strip().casefold() == "character_f1":
+            if metric_params:
+                raise ValueError(f"character_f1 这一metric的params必须为空喵!")
 
 def load_config(yaml_path):
     """

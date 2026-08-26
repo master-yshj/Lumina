@@ -156,7 +156,9 @@ def check_and_add_config(config,template,key="config"):
                 if template_elem == "REQUIRED":
                     if config[index] is None:
                         raise ValueError(f"config[{index}]: {config[index]} 为必填字段喵!")
-                if type(template_elem) in (dict, list):
+                if key.startswith("config.metrics") and template_key == "params":
+                    pass
+                elif type(template_elem) in (dict, list):
                     if config_elem is not None:
                         if isinstance(template_elem, dict):
                             if isinstance(config_elem, dict):

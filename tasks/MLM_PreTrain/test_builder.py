@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 def build_mlm_test(config_dict, test_metrics_path, logger=None):
     train_config_path = config_dict["checkpoint"]["config_path"]
-    from parse.parser import load_config
+    from parse.copy.parser import load_config
     train_config = load_config(train_config_path)
     # 接收tokenizer参数
     tokenizer_config = train_config["tokenizer"]

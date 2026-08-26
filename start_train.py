@@ -2,7 +2,7 @@ import random
 import numpy
 import torch
 
-from parse.parser import parse_args, load_config, normalize_resume_path
+from parse.copy.parser import parse_args, load_config, normalize_resume_path
 from tasks.registry import TASK_BUILDER_REGISTRY
 from experiments import create_experiments_directories, save_config_snapshot, resolve_resume_experiment_paths
 from logger.logger import RunLogger

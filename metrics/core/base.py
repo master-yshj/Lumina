@@ -5,8 +5,11 @@ class Metric:
     def __call__(self, **context):
         self.update(**context)
 
+    def process(self, **context):
+        raise NotImplementedError()
+
     def update(self, **context):
-        raise NotImplementedError
+        raise NotImplementedError()
 
     def compute(self):
         raise NotImplementedError()
