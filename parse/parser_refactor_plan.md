@@ -1,2077 +1,4719 @@
-# Parser 重构方案
+# 通用 Parser 重构实施方案
 
-## 1. 重构目标
+## 1. 文档定位
 
-当前 Parser 的主要问题不是缺少某个 QA 字段，而是配置系统的职责和层级没有分离：
+本文是后续 Parser 实现的主设计文档。实现时以本文定义的接口、数据流、职责边界和迁移顺序为准。
 
-- `parser.py`、`test_parser.py`、`inference_parser.py` 各自维护一套配置模板和校验逻辑；
-- 一个全局 `CUSTOM_DICT` 同时描述 MLM、QA、训练、测试和推理配置；
-- `check_and_add_config()` 同时负责递归、默认值、Loss 特殊处理、Metrics 特殊处理和错误路径；
-- `validate_config()` 过于庞大，任务差异散落在大量条件分支中；
-- `dataset.max_seq_length`、`dataset.mlm_prob` 等字段被错误地当成所有任务共有字段；
-- `losses` 和 `metrics` 的 `params` 是多态结构，却被固定模板递归逻辑处理；
-- 训练、测试、推理三种运行模式的必需字段不同，但当前模板没有清晰区分；
-- Builder 依赖 Parser 返回的字典结构，Parser 重构不能破坏现有 Builder 接口。
-
-重构后的系统应满足：
+这次重构允许同步修改：
 
 ```text
-运行模式决定配置外层结构
-任务类型决定任务专属字段
-普通字段使用通用递归处理
-多态 params 使用组件专属校验
-路径解析、结构规范化和语义校验相互独立
-训练/测试/推理 Parser 共享底层逻辑
-Builder 继续接收字典配置
+YAML
+Parser
+Registry
+Builder
+Task
+入口
+组件构造接口
+配置快照
+Test/Inference 配置加载方式
+```
+
+不再以兼容旧扁平配置为主要目标。旧 `parse.copy` 和旧 YAML 只作为迁移对照，不决定新架构。
+
+最终目标不是让 Parser 特别支持 MLM、QA、GPT，而是：
+
+> Parser 支持任意遵守 ModeSpec、TaskSpec、ComponentSpec 和 SchemaNode 协议的扩展。
+
+MLM、QA 只是第一批内置扩展。未来接入 GPT 时，不应修改 Parser 引擎。
+
+---
+
+## 2. 当前问题
+
+当前真实运行入口使用：
+
+```text
+start_train.py     → parse.copy.parser
+start_test.py      → parse.copy.test_parser
+start_inference.py → parse.copy.inference_parser
+```
+
+当前问题：
+
+```text
+三套 Parser 重复 YAML、路径和校验逻辑
+mode 被编码进 task 名称
+全局 CUSTOM_DICT 淋合任务和模式
+Parser 硬编码组件参数
+params 多态结构被固定模板处理
+路径字段通过字段名硬编码
+Builder 与旧扁平路径强耦合
+Registry 只登记运行对象，没有统一配置规格
+新增任务需要修改 Parser 条件分支
+```
+
+新系统必须消除这些问题，而不是只拆分旧函数。
+
+---
+
+## 3. 理想 YAML
+
+### 3.1 顶层结构
+
+```yaml
+version: 1
+
+experiment:
+  name: TinyBert_QA_SFT
+  seed: 42
+
+run:
+  mode: train
+  resume_from: null
+
+task:
+  type: qa_sft
+  params: null
+
+components:
+  tokenizer:
+    type: qa_wordpiece
+    params: null
+
+  model:
+    type: tinybert_qa
+    params: null
+    init_from:
+      kind: backbone
+      path: ../experiments/mlm/checkpoints/best.pt
+
+  losses:
+    - name: qa_cross_entropy
+      type: cross_entropy
+      weight: 1.0
+      params: null
+
+data:
+  dataset:
+    type: cmrc2018
+    root: ../dataset/QA/SFT/CMRC2018/tiny_cmrc2018
+    splits:
+      train: tiny_cmrc2018_train.jsonl
+      valid: tiny_cmrc2018_val.jsonl
+      test: tiny_cmrc2018_test.jsonl
+    params: null
+
+  collator:
+    type: qa_span
+    params: null
+
+  loaders:
+    train:
+      batch_size: 8
+      shuffle: true
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    valid:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+
+optimization:
+  optimizer:
+    type: adamw
+    params: null
+
+  scheduler:
+    type: step_lr
+    interval: step
+    params: null
+
+  loop:
+    total_steps: 50000
+    accumulation_steps: 1
+    log_every_steps: 100
+
+  validation:
+    enabled: true
+    every_steps: 500
+    early_stopping:
+      enabled: true
+      patience: 10
+    checkpoint:
+      save_every_rounds: 1
+
+evaluation:
+  test_after_train: true
+  metrics:
+    train:
+      - type: exact_match
+        params: null
+      - type: character_f1
+        params: null
+    valid:
+      - type: exact_match
+        params: null
+      - type: character_f1
+        params: null
+    test:
+      - type: exact_match
+        params: null
+      - type: character_f1
+        params: null
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1
+```
+
+### 3.2 顶层职责
+
+```text
+version       → 配置协议版本
+experiment    → 实验身份与随机种子
+run           → 本次运行模式和状态来源
+task          → 业务任务及任务参数
+components    → 可构造算法组件
+data          → 数据集、Collator 和 Split Loader
+optimization  → 训练模式专属优化与循环
+evaluation    → Metrics 和训练后测试
+inference     → 推理模式专属参数
+runtime       → 设备及运行环境
+```
+
+### 3.3 Mode 与 Task 分离
+
+```yaml
+run:
+  mode: test
+
+task:
+  type: qa_sft
+```
+
+不再使用：
+
+```text
+qa_sft_test
+mlm_pretrain_test
+mlm_pretrain_inference
+```
+
+系统查找键统一为：
+
+```text
+(mode_key, task_key)
 ```
 
 ---
 
-## 2. 核心概念：mode、task、component
+## 4. 总体架构
 
-### 2.1 `mode`
-
-`mode` 表示运行模式：
+完整链路：
 
 ```text
-train
- test
- inference
+YAML
+→ load_raw_yaml
+→ bootstrap_config
+→ collect_specs
+→ compile_schema
+→ normalize_structure
+→ normalize_polymorphic_nodes
+→ apply_overrides
+→ resolve_paths
+→ validate_config
+→ ParsedConfig
+→ BuildContext
+→ Mode Runner + Task Builder
 ```
 
-它决定顶层需要哪些运行配置。
-
-### 2.2 `task`
-
-`task` 表示业务任务。建议将“任务”和“运行模式”分开理解。
-
-当前外部任务字符串可以继续兼容：
+这里每个箭头都表示“上一步返回对象，作为下一步输入”，不是只描述概念：
 
 ```text
-mlm_pretrain
-mlm_pretrain_test
-qa_sft
-qa_sft_test
+load_raw_yaml
+输入：YAML 文件路径
+返回：raw_config: dict
+原因：先安全地把文本变成 Python 对象，不做任务判断
+
+bootstrap_config
+输入：raw_config、config_path、Registries、expected_mode
+返回：ParseContext
+原因：先取得 mode、task 和所有 component.type，才能知道后面要组合哪些 Schema
+
+collect_specs
+输入：ParseContext、ParserServices
+返回：SpecBundle
+原因：把本次真正使用的 Root/Mode/Task/Component Spec 集中起来
+
+compile_schema
+输入：SpecBundle
+返回：CompiledSchema
+原因：把多个 Schema contribution 合成一份最终契约，并提前收集路径、多态和 Validator 元数据
+
+normalize_structure
+输入：raw_config、CompiledSchema、ParseContext
+返回：新的 normalized_config: dict
+原因：统一缺失字段、默认值、None、dict/list 结构和 canonical key
+
+normalize_polymorphic_nodes
+输入：normalized_config、CompiledSchema、ParseContext
+返回：新的 config: dict
+原因：按 component.type 处理 params，保证最终 params 都是 dict
+
+apply_overrides
+输入：config、ConfigOverride 列表、CompiledSchema
+返回：新的 config: dict
+原因：CLI 覆盖也必须经过同一 Schema，不得绕过配置规则
+
+resolve_paths
+输入：config、CompiledSchema、ParseContext
+返回：路径已绝对化的新 config: dict
+原因：统一处理 config_dir、字段基准和推导路径
+
+validate_config
+输入：config、CompiledSchema、ParseContext
+返回：None
+原因：只检查业务语义和运行环境；失败直接抛异常
+
+ParsedConfig
+输入：最终 config、context、compiled_schema、fingerprint
+返回：一个数据对象
+原因：同时交付 Builder 需要的配置和调试/复现需要的上下文
+
+BuildContext
+输入：ParsedConfig、logger、实验目录、设备信息、ParserServices
+返回：Task Builder 使用的运行上下文
+原因：运行依赖不应该塞进 YAML 或 Parser
+
+Mode Runner + Task Builder
+输入：BuildContext
+返回：TrainSummary/TestSummary/InferenceResult 等运行结果
+原因：Runner 管模式流程，Builder 管任务组件组装
 ```
 
-但 Parser 内部应标准化为：
+所有返回配置的新阶段都不得修改输入对象；`validate_config()` 成功返回 `None`，失败抛 `ConfigError` 子类。
+
+Parser 引擎不包含：
 
 ```text
-mlm_pretrain_test
-→ mode=test, task=mlm_pretrain
-
-qa_sft_test
-→ mode=test, task=qa_sft
+if task == mlm
+if task == qa
+if model == tinybert
+if optimizer == adamw
 ```
 
-如果暂时不修改外部配置和任务 Registry，也可以保留原始 `task`，额外生成内部变量：
-
-```text
-base_task
-mode
-```
-
-以后校验统一使用：
-
-```text
-mode == "train" and base_task == "qa_sft"
-```
-
-不要在各处继续直接判断一长串模式化任务名称。
-
-### 2.3 `component`
-
-组件包括：
-
-```text
-model
-tokenizer
-dataset
-dataloader
-losses
-metrics
-optimizer
-scheduler
-train
-valid
-test
-checkpoint
-cuda
-```
-
-每个组件的结构校验和语义校验应尽量独立。
+这些差异全部来自 Registry 中的 Spec。
 
 ---
 
-## 3. 推荐文件结构
+## 5. 核心数据类型
 
-建议最终将 `main/parse` 整理为：
+本节中的对象都是“数据载体”，不是完整流程。每个对象的创建者和消费者如下。
+
+## 5.1 `ConfigPath`
+
+本质：表示 YAML 配置树中一个节点的逻辑位置，不是磁盘文件路径。
+
+内部数据：
+
+```text
+parts: tuple[str | int, ...]
+```
+
+例如：
+
+```text
+("config", "components", "losses", 0, "params")
+→ 显示为 config.components.losses[0].params
+```
+
+创建和变换：
+
+```text
+ConfigPath.root("config")
+→ 返回 ConfigPath(("config",))
+
+path.child("components")
+→ 返回新的 ConfigPath
+→ 原 path 不变
+
+path.index(0)
+→ 返回新的 ConfigPath，并加入列表索引
+
+str(path)
+→ 返回用户可读字符串
+```
+
+创建者：Schema 递归、Bootstrap 扫描、Override 解析。
+
+消费者：错误对象、`ParseContext.selections`、Schema walker、路径依赖图、Validator。
+
+`ConfigPath` 不提供 `exists()`；某路径是否在配置或映射中存在，由操作该容器的函数判断。
+
+## 5.2 `ParseContext`
+
+本质：Bootstrap 完成后生成的只读“本次解析选择结果”。它不是最终配置。
+
+字段：
+
+```text
+config_path: pathlib.Path
+config_dir: pathlib.Path
+expected_mode: str | None
+mode_key: str
+task_key: str
+selections: Mapping[ConfigPath, ComponentSelection]
+validate_runtime: bool
+```
+
+创建者：
+
+```text
+bootstrap_config() → ParseContext
+```
+
+消费者：
+
+```text
+collect_specs
+compile_schema
+normalize_polymorphic_nodes
+resolve_paths
+validate_config
+Runner/Builder
+```
+
+`selections` 记录：
+
+```text
+config.components.model → tinybert_qa
+config.components.losses[0] → cross_entropy
+config.evaluation.metrics.valid[0] → exact_match
+```
+
+方法：
+
+```text
+get_selection(path)
+→ 实际执行 self.selections[path]
+→ 找不到时抛 BootstrapError
+```
+
+它查询的是 selections 字典中是否有该键，不是调用 `path.exists()`。
+
+## 5.3 `ComponentSelection`
+
+本质：表示“Bootstrap 在某个 YAML 节点选择了哪个 ComponentSpec”。
+
+字段：
+
+```text
+category
+key
+path
+spec
+```
+
+示例：
+
+```text
+category="model"
+key="tinybert_qa"
+path=ConfigPath(("config", "components", "model"))
+spec=<ComponentSpec tinybert_qa>
+```
+
+创建者：Bootstrap 在读取并解析 `type` 后创建。
+
+消费者：
+
+```text
+collect_specs
+normalize_polymorphic_nodes
+Component Validator
+Builder
+```
+
+保存 `spec` 的原因：类型已经在 Bootstrap 中确认，后续阶段不应反复查 Registry 或再次解释别名。
+
+## 5.4 `ConfigOverride`
+
+本质：表示“一次尚未应用的配置覆盖请求”。
+
+字段：
+
+```text
+path: ConfigPath
+raw_value: Any
+source: str
+```
+
+例如：
+
+```text
+path=config.run.resume_from
+raw_value="../checkpoints/last.pt"
+source="cli:--resume"
+```
+
+创建者：CLI 参数解析器或超参数运行器。
+
+消费者：`apply_overrides()`。
+
+它自身不修改配置。`apply_overrides()` 找到目标 SchemaNode，使用该节点的 `normalize()` 处理 `raw_value` 后，才把结果写入新的配置副本。
+
+---
+
+## 6. SchemaNode 协议
+
+Schema 是一棵由节点对象组成的树。YAML 解析后也是一棵由 dict、list 和标量组成的树。`normalize()` 的工作就是让 Schema 树与 YAML 值树从根节点开始一一对应处理。
+
+## 6.1 `normalize()` 到底如何被调用
+
+外部只调用一次根节点：
+
+```text
+compiled_schema.root.normalize(
+    raw_config,
+    ConfigPath.root("config"),
+    context,
+)
+```
+
+后续递归由容器节点负责：
+
+```text
+MappingSchema
+→ 对每个字段调用对应 child_schema.normalize(...)
+
+SequenceSchema
+→ 对每个列表元素调用 item_schema.normalize(...)
+
+ScalarSchema
+→ 不再递归，直接处理当前值
+```
+
+因此 `SchemaNode` 抽象基类只声明：
+
+```text
+normalize(self, value, path, context) → Any
+```
+
+`self` 是当前规则，`value` 是当前 YAML 值，`path` 是当前逻辑位置，`context` 是 Bootstrap 上下文。
+
+统一返回规则：
+
+```text
+成功 → 返回规范化值
+可选字段缺失且无默认 → 返回 MISSING
+非法 → 抛 ConfigError 子类
+```
+
+统一副作用规则：不修改传入值。
+
+`merge` 和 `walk` 不作为节点实例方法：
+
+```text
+merge_schema() → schema/merge.py 的纯函数
+walk_schema()  → schema/walk.py 的纯函数
+```
+
+## 6.2 `ScalarSchema.normalize()`
+
+字段：
+
+```text
+python_types
+required
+default=MISSING
+allow_none
+normalizer=None
+```
+
+调用者：父 `MappingSchema`、父 `SequenceSchema`，或者根节点测试。
+
+执行顺序和返回：
+
+```text
+value is MISSING
+├── default != MISSING → 返回 deepcopy(default)
+├── required=True      → 抛 MissingFieldError
+└── 否则               → 返回 MISSING
+
+value is None
+├── allow_none=True → 返回 None
+└── 否则            → 抛 NullNotAllowedError
+
+value 是具体值
+├── 类型不匹配 → 抛 TypeMismatchError
+├── 有 normalizer → 返回 normalizer(value)
+└── 否则 → 返回 value
+```
+
+`normalizer` 只做明确且无歧义的转换，例如字符串 `strip()`；不能把 `"one"` 猜成数字 1。
+
+## 6.3 `MappingSchema.normalize()`
+
+字段：
+
+```text
+fields: Mapping[str, SchemaNode]
+allow_unknown: bool = false
+```
+
+必填信息属于各子节点的 `required`，不再额外维护容易冲突的 `required: set[str]`。
+
+输入：当前 YAML dict；返回：新 dict。
+
+执行顺序：
+
+```text
+1. value 不是 Mapping → TypeMismatchError
+2. unknown = value.keys - fields.keys
+3. 不允许未知字段且 unknown 非空 → UnknownFieldError
+4. result = {}
+5. 遍历 fields
+6. raw_child = value.get(field_name, MISSING)
+7. normalized_child = child_schema.normalize(
+       raw_child,
+       path.child(field_name),
+       context,
+   )
+8. normalized_child is not MISSING 时写入 result
+9. 若允许未知字段，deepcopy 后写入 result
+10. 返回 result
+```
+
+完整示例：
+
+```text
+Schema fields:
+name → required str
+seed → optional int, default=42
+
+YAML value:
+{"name": "demo"}
+
+返回：
+{"name": "demo", "seed": 42}
+```
+
+## 6.4 `SequenceSchema.normalize()`
+
+字段：
+
+```text
+item_schema
+min_items=0
+max_items=None
+allow_none=false
+```
+
+输入：当前 YAML list；返回：新 list。
+
+执行顺序：
+
+```text
+1. None 时检查 allow_none
+2. 不是 list → TypeMismatchError
+3. 长度小于 min_items 或超过 max_items → SchemaError
+4. result = []
+5. enumerate(value)
+6. item_schema.normalize(item, path.index(i), context)
+7. append 到 result
+8. 返回 result
+```
+
+示例：Loss 列表第 0 项错误时，子节点收到路径：
+
+```text
+config.components.losses[0]
+```
+
+## 6.5 `EnumSchema.normalize()`
+
+本质：有限字符串的 ScalarSchema。
+
+输入：例如 `"STEP"`；返回：canonical 字符串 `"step"`。
+
+执行：
+
+```text
+基础缺失/None/类型处理
+→ 根据 case_sensitive 规范化查询键
+→ 在 choices 中查询
+→ 未找到时报 ConfigValidationError 或 SchemaError
+→ 返回 choices 映射的 canonical value
+```
+
+适合：
+
+```text
+scheduler.interval
+model.init_from.kind
+```
+
+`run.mode` 由 Mode Registry 解析，不维护重复 Enum。
+
+## 6.6 `RegistryKeySchema.normalize()`
+
+本质：把 YAML 中组件类型名称变成 Registry canonical key。
+
+输入：例如 `"AdamW"`；返回：`"adamw"`。
+
+执行：
+
+```text
+基础缺失/None/字符串检查
+→ registry.resolve_key(value)
+→ 返回 canonical key
+```
+
+Registry 负责别名，不由 Schema 自己维护 `aliases_allowed`。
+
+## 6.7 `PolymorphicSchema.normalize()`
+
+用于：
+
+```text
+{type, params}
+```
+
+字段：
+
+```text
+category
+discriminator="type"
+params_field="params"
+common_schema
+```
+
+第一阶段 `normalize()`：
+
+```text
+调用 common_schema.normalize(value, path, context)
+→ type 被 RegistryKeySchema 规范化
+→ params 只检查字段存在且为 None 或 dict
+→ 返回公共结构 dict
+```
+
+第二阶段由 `normalize_polymorphic_nodes()`：
+
+```text
+context.get_selection(path)
+→ selection.spec.normalize_params(params, path.child("params"), context)
+→ 把结果写回新的配置
+```
+
+为什么分两阶段：普通 Schema 知道公共 `{type, params}` 结构，但只有 Bootstrap 选择出的 ComponentSpec 知道具体参数字段和默认值。
+
+## 6.8 `PathSchema.normalize()`
+
+本质：路径值的结构节点，不是路径解析器。
+
+第一阶段输入输出：
+
+```text
+str → pathlib.Path（可能仍是相对路径）
+pathlib.Path → 原样或复制返回
+None → allow_none 时返回 None
+其他类型 → TypeMismatchError
+```
+
+后续 `resolve_paths()` 才做：
+
+```text
+选择基准
+拼接相对路径
+转成绝对路径
+调用 deriver
+```
+
+再后续 Validator 才做：
+
+```text
+存在性
+is_file/is_dir
+后缀
+非空
+```
+
+## 6.9 Mode 可选分区如何实现
+
+不需要额外实现一个含糊的 `OptionalSectionSchema` 类。分区是否 required/optional/forbidden 直接通过 ModeSpec 的 Schema contribution 表达：
+
+```text
+required
+→ Mode contribution 中加入 required=True 的节点
+
+optional
+→ 加入 required=False 的节点
+
+forbidden
+→ 不加入最终 Schema
+→ Root Mapping 的未知字段规则会拒绝它
+```
+
+例如 Test Mode 不合并 `optimization`，用户写了该分区时，Root Mapping 直接报 UnknownFieldError。这样无需另一套分区状态机制。
+
+---
+
+## 7. Schema 合并与编译协议
+
+最终 Schema 不是手写的完整任务模板，而是把本次运行实际选中的贡献组合起来：
+
+```text
+ROOT_SCHEMA
++ ModeSpec.schema_contribution
++ TaskSpec.schema_contribution
++ ComponentSpec.schema_contribution
+```
+
+## 7.1 `merge_schema()` 如何工作
+
+签名：
+
+```text
+merge_schema(left, right, path, left_source, right_source) → SchemaNode
+```
+
+输入是两个描述同一 YAML 路径的 SchemaNode；返回一个新节点，不修改输入。
+
+递归规则：
+
+```text
+Mapping + Mapping
+→ 合并 fields
+→ 同名字段递归 merge_schema
+→ 独有字段复制到结果
+
+Sequence + Sequence
+→ 合并 item_schema
+→ min/max/allow_none 必须兼容
+
+Scalar + Scalar
+→ python_types、required、allow_none、default、normalizer 必须兼容
+
+不同节点类型
+→ SchemaConflictError
+```
+
+“后者覆盖前者”被禁止。若两个来源对同一路径给出不同默认值，系统无法判断谁正确，必须在注册时修复。
+
+## 7.2 `collect_specs()` 先决定合并谁
+
+```text
+collect_specs(context, services) → SpecBundle
+```
+
+执行：
+
+```text
+services.root_schema
+→ services.mode_registry.get(context.mode_key)
+→ services.task_registry.get(context.task_key)
+→ 遍历 context.selections 取得 component specs
+→ 去重并稳定排序
+→ 返回 SpecBundle
+```
+
+`SpecBundle` 只是输入集合，不是最终 Schema。
+
+## 7.3 `compile_schema()` 执行合并和收集
+
+```text
+compile_schema(bundle) → CompiledSchema
+```
+
+执行：
+
+```text
+1. 从 Root Schema 开始
+2. merge Mode contribution
+3. merge Task contribution
+4. merge 每个 Component contribution
+5. walk_schema(final_root)
+6. 收集所有 PathSchema
+7. 收集所有 PolymorphicSchema
+8. 收集 ValidatorRef
+9. 记录每个 ConfigPath 的 source
+10. 返回 CompiledSchema
+```
+
+返回数据：
+
+```text
+root
+path_nodes
+polymorphic_nodes
+validator_refs
+schema_sources
+```
+
+为什么需要编译结果：后续阶段必须使用同一份最终 Schema。若 Normalize、Path、Validator 各自重新组合，会出现规则不一致和重复查找。
+
+---
+
+## 8. Spec 与 Registry 如何协作
+
+Spec 是声明对象，不是运行时组件实例。Registry 保存 Spec，Bootstrap 根据 YAML 的 `type` 选择 Spec，后续阶段调用 Spec 中的 Schema、Normalizer、Validator 或 Factory。
+
+## 8.1 `ComponentSpec`
+
+建议实现为不可变 dataclass。字段：
+
+```text
+category
+key
+aliases
+params_schema
+default_params
+capabilities
+normalizers
+validators
+factory
+schema_contribution
+```
+
+创建者：`builtins/components/*.py` 中的 `build_xxx_spec()`。
+
+调用过程：
+
+```text
+Registry.register(component_spec)
+→ component_spec.validate_definition()
+
+Bootstrap 读取 type
+→ ComponentRegistry.get(category, type)
+→ 创建 ComponentSelection(spec=component_spec)
+
+normalize_polymorphic_nodes
+→ component_spec.normalize_params(...)
+
+validate_config
+→ component_spec validators
+
+Builder
+→ component_spec.build(...)
+```
+
+`normalize_params()` 返回最终 dict；`validate_definition()` 和 Validator 成功返回 `None`；`build()` 返回真正的组件实例。
+
+## 8.2 `TaskSpec`
+
+建议实现为不可变 dataclass。字段：
+
+```text
+key
+aliases
+supported_modes
+task_params_schema
+schema_contribution
+bootstrap_descriptors
+required_capabilities_by_mode
+normalizers
+validators
+cross_validators
+builders_by_mode
+```
+
+创建者：`builtins/tasks/*.py`。
+
+消费者和用途：
+
+```text
+Bootstrap
+→ supports_mode(mode_key)
+→ 取得 bootstrap_descriptors
+
+Compile
+→ 合并 schema_contribution
+
+Validator Pipeline
+→ 执行 validators/cross_validators
+
+Runner
+→ get_builder(mode_key)
+```
+
+`get_builder()` 执行映射查询：
+
+```text
+builders_by_mode[mode_key]
+```
+
+不拼接 `task + mode` 字符串。
+
+能力要求示例：
+
+```text
+qa_sft:
+  tokenizer → offset_mapping
+  model → extractive_qa
+  dataset → extractive_qa
+  collator → qa_span_batching
+```
+
+## 8.3 `ModeSpec`
+
+建议实现为不可变 dataclass。字段：
+
+```text
+key
+aliases
+schema_contribution
+bootstrap_descriptors
+required_sections
+forbidden_sections
+normalizers
+validators
+runner
+```
+
+调用过程：
+
+```text
+Bootstrap
+→ ModeRegistry.get(mode_key)
+→ 取得描述符和模式支持规则
+
+Compile
+→ 合并模式 Schema
+
+Validator Pipeline
+→ 执行模式 Validator
+
+入口
+→ mode_spec.get_runner()
+```
+
+`runner` 返回/引用一个可调用对象，实际运行时由入口调用。ModeSpec 自身不执行训练。
+
+## 8.4 Registry 方法的实际行为
+
+```text
+register(spec) → None
+```
+
+执行 `spec.validate_definition()`，检查 key/alias 冲突，然后写入内部 dict。
+
+```text
+resolve_key(raw_key) → str
+```
+
+执行 `strip/casefold` 和 alias 查询，返回 canonical key；未知时抛 `UnknownRegistryKeyError`。
+
+```text
+get(key) → Spec
+```
+
+先解析 canonical key，再返回对应 Spec。
+
+```text
+contains(key) → bool
+all_keys() → tuple[str, ...]
+```
+
+不同组件类别使用独立子 Registry，避免同名 Model 和 Dataset 冲突。Registry 不保存当前配置值，也不创建运行时组件。
+
+---
+
+## 9. Bootstrap 阶段
+
+Bootstrap 解决的问题是：完整 Schema 依赖 `type`，但此时配置还没有完整规范化。因此它只做受限读取和 Registry 选择。
+
+## 9.1 输入和返回
+
+```text
+bootstrap_config(
+    raw_config,
+    config_path,
+    mode_registry,
+    task_registry,
+    component_registry,
+    expected_mode=None,
+    validate_runtime=True,
+) → ParseContext
+```
+
+输入 `raw_config` 是 `yaml.safe_load()` 返回的原始 dict；返回的 `ParseContext` 不包含修改后的配置。
+
+## 9.2 具体执行
+
+```text
+1. 检查 raw_config 是 Mapping
+2. 从 raw_config["run"]["mode"] 读取字符串
+3. mode_registry.resolve_key → mode_key
+4. expected_mode 非 None 时也规范化并比较
+5. 从 raw_config["task"]["type"] 读取字符串
+6. task_registry.resolve_key → task_key
+7. task_spec = task_registry.get(task_key)
+8. task_spec.supports_mode(mode_key)，否则报错
+9. 取得 ModeSpec/TaskSpec.bootstrap_descriptors
+10. 每个 descriptor 扫描一个或多个 YAML 节点
+11. 从节点 Mapping 中读取 type
+12. component_registry.get(category, raw_type) → ComponentSpec
+13. 为真实路径创建 ComponentSelection
+14. 保存到 selections[ConfigPath]
+15. 返回 ParseContext
+```
+
+例如 Loss descriptor 扫描：
+
+```text
+raw_config["components"]["losses"]
+→ enumerate 列表
+→ 第 0 项路径 config.components.losses[0]
+→ 读取 type="CrossEntropyLoss"
+→ Registry 返回 canonical key="cross_entropy"
+→ 创建 ComponentSelection
+```
+
+Bootstrap 不修改 YAML 中的原始 `type`；后续 `RegistryKeySchema.normalize()` 才在返回配置中写入 canonical key。
+
+## 9.3 描述符从哪里来
+
+公共的 `run.mode` 和 `task.type` 由 Bootstrap 固定读取，因为它们决定整个解析过程。
+
+其他动态位置由 ModeSpec/TaskSpec 提供，例如：
+
+```text
+components.model
+components.losses[*]
+evaluation.metrics.*[*]
+```
+
+Bootstrap 引擎只解释 descriptor，不知道这些节点属于 MLM、QA 还是 GPT。
+
+## 9.4 本阶段明确不做
+
+```text
+不补默认值
+不调用 SchemaNode.normalize
+不合并 params
+不解析路径
+不检查数值范围
+不检查文件系统
+不构造组件
+```
+
+这些职责若进入 Bootstrap，会导致后续 Schema 流程重复或顺序混乱。
+
+---
+
+## 10. 从 ParseContext 到 CompiledSchema
+
+这一阶段没有读取或修改配置值，只组合规则。
+
+### `collect_specs(context, services) → SpecBundle`
+
+具体查询：
+
+```text
+root_schema = services.root_schema
+mode_spec = services.mode_registry.get(context.mode_key)
+task_spec = services.task_registry.get(context.task_key)
+component_specs = tuple(selection.spec for selection in context.selections.values())
+```
+
+组件 Spec 要去重并按 `(category, key, path)` 稳定排序。返回 `SpecBundle` 数据对象。
+
+### `compile_schema(bundle) → CompiledSchema`
+
+使用第 7 章的 `merge_schema()` 逐个合并，然后 `walk_schema()` 收集元数据。成功返回 CompiledSchema，冲突时抛 SchemaConflictError。
+
+该阶段不调用任何 `normalize()`，因为现在只处理 Schema 对象，不处理 YAML 值。
+
+---
+
+## 11. `normalize_structure()` 的实际递归
+
+接口：
+
+```text
+normalize_structure(raw_config, compiled_schema, context) → dict
+```
+
+实现核心只有一次根调用：
+
+```text
+result = compiled_schema.root.normalize(
+    raw_config,
+    ConfigPath.root("config"),
+    context,
+)
+```
+
+根 `MappingSchema.normalize()` 再逐层调用子节点，因此不需要 `normalize_structure()` 自己写一套字段递归。
+
+示例：
+
+```text
+Root Mapping
+→ experiment 子 Mapping
+→ seed 子 Scalar
+→ seed 缺失，Scalar 返回默认值 42
+→ 各父 Mapping 把返回值写入新 dict
+→ 最终返回完整新配置
+```
+
+阶段结束时：
+
+```text
+未知字段已拒绝
+必填字段已确认
+普通默认值已填充
+None 已检查
+list/dict 已复制
+Registry key 已 canonicalize
+Path 已转 pathlib.Path，但可能是相对路径
+Polymorphic params 仍可能是 None 或用户 dict
+```
+
+输入 `raw_config` 不得变化。
+
+---
+
+## 12. `normalize_polymorphic_nodes()` 如何处理 params
+
+接口：
+
+```text
+normalize_polymorphic_nodes(config, compiled_schema, context) → dict
+```
+
+这不是再次递归全部字段，只遍历 `compiled_schema.polymorphic_nodes`。
+
+每个节点执行：
+
+```text
+1. node_config = get_value(config, node_path)
+2. selection = context.get_selection(node_path)
+3. 检查 node_config["type"] == selection.key
+4. raw_params = node_config["params"]
+5. final_params = selection.spec.normalize_params(
+       raw_params,
+       node_path.child("params"),
+       context,
+   )
+6. 把 final_params 写入新配置副本
+```
+
+`ComponentSpec.normalize_params()` 内部执行：
+
+```text
+result = deepcopy(default_params)
+→ raw_params is None 时不覆盖
+→ raw_params 是 dict 时 result.update(raw_params)
+→ params_schema.normalize(result, params_path, context)
+→ 依次调用 normalizers
+→ 确认并返回 dict
+```
+
+无参数组件：
+
+```text
+default_params={}
+params_schema=空 MappingSchema
+```
+
+因此 `null` 和 `{}` 最终都返回 `{}`。
+
+第一版不自动发现 params 内的未知嵌套判别字段；需要时必须显式登记嵌套 PolymorphicSchema 和 BootstrapDescriptor。
+
+---
+
+## 13. Override 阶段如何执行
+
+CLI 不直接修改 YAML dict，而是先创建 `ConfigOverride`。
+
+```text
+apply_overrides(config, overrides, compiled_schema, context) → dict
+```
+
+对每个 Override：
+
+```text
+1. 根据 ConfigPath 在 CompiledSchema 中找到 SchemaEntry
+2. 找不到 → UnknownFieldError
+3. 若路径是 run.mode、task.type 或 component.type → 拒绝
+4. normalized_value = target_node.normalize(
+       override.raw_value,
+       override.path,
+       context,
+   )
+5. set_value_copy 把值写入配置副本
+6. 处理下一项
+7. 返回新 dict
+```
+
+为什么再次调用 `normalize()`：CLI 传入的是原始值，也必须遵守目标节点的类型、None 和基础结构规则。
+
+`--resume` 由入口转换为：
+
+```text
+ConfigOverride(
+    path=config.run.resume_from,
+    raw_value=命令行字符串,
+    source="cli:--resume",
+)
+```
+
+---
+
+## 14. Schema 驱动路径解析
+
+```text
+resolve_paths(config, compiled_schema, context, deriver_registry) → dict
+```
+
+它只遍历 `compiled_schema.path_nodes`，不按字段名搜索配置。
+
+### 路径基准
+
+```text
+config_dir
+→ 使用 context.config_dir
+
+field_reference(data.dataset.root)
+→ 使用配置中该字段已经解析后的 Path
+```
+
+### 为什么需要依赖排序
+
+例如 Split 路径依赖 Dataset Root：
+
+```text
+config.data.dataset.root
+→ 先解析
+
+config.data.dataset.splits.train
+→ 再以 root 为基准解析
+```
+
+实现：
+
+```text
+PathNode 列表
+→ 建 dependency 图
+→ graphlib.TopologicalSorter
+→ 得到解析顺序
+```
+
+### 每个路径值如何处理
+
+```text
+当前值 None
+├── 有 deriver → 调用命名 deriver 返回 Path
+├── allow_none → 保留 None
+└── 否则 → PathResolutionError
+
+当前值是相对 Path
+├── base=config_dir → context.config_dir / value
+└── base=字段引用 → resolved_base / value
+
+当前值是绝对 Path
+→ 直接 resolve(strict=False)
+```
+
+把结果写入新配置。这里不检查 `exists/is_file/is_dir`；这些是 Validator 的工作。
+
+---
+
+## 15. 注册式校验流水线
+
+详细字段规则见 `validate_config_guide.md`。本节只说明“谁被调用、什么时候调用、返回什么”。
+
+### `ValidatorSpec`
+
+一个 ValidatorSpec 是一个不可变数据对象，不是校验结果。
+
+```text
+name
+phase
+priority
+applies_to(context, config)
+validate(context, config)
+source
+```
+
+调用：
+
+```text
+should_run(context, config) → bool
+run(context, config) → None
+```
+
+当 `should_run()` 为 True 时调用 `validate()`；成功必须返回 None，失败直接抛 ConfigValidationError 或其子类。
+
+### `collect_validators()`
+
+```text
+collect_validators(compiled_schema, context) → tuple[ValidatorSpec, ...]
+```
+
+来源：
+
+```text
+Schema 节点
+ComponentSpec
+ModeSpec
+TaskSpec
+Runtime
+```
+
+按 `phase_order, priority, name, source` 稳定排序，返回不可变 tuple。
+
+### `validate_config()`
+
+```text
+validate_config(config, context, compiled_schema) → None
+```
+
+执行：
+
+```text
+收集 Validator
+→ 依次 should_run
+→ true 时 run
+→ 所有成功后返回 None
+```
+
+它不修改 config、不补默认值、不解析路径、不构造组件，也不捕获并吞掉 ConfigError。
+
+Runtime Validator 只有在 `context.validate_runtime=True` 时执行；`runtime.py` 才允许导入 torch。
+
+---
+
+## 16. 配置快照与返回契约
+
+### `ParsedConfig`
+
+`load_config()` 成功返回 `ParsedConfig` 数据对象，而不是只返回 dict：
+
+```text
+config: dict
+context: ParseContext
+compiled_schema: CompiledSchema
+schema_fingerprint: str
+```
+
+Builder 主要使用 `parsed.config`；调试、复现和测试可以使用其余字段。
+
+`config` 的不变量：
+
+```text
+Registry key 是 canonical key
+普通默认值已填充
+params 都是 dict
+非 None 路径都是绝对 pathlib.Path
+不包含 Schema、Spec 或运行时实例
+```
+
+### 快照函数
+
+```text
+to_serializable_config(config) → dict
+save_config_snapshot(config, output_path) → pathlib.Path
+```
+
+`to_serializable_config()` 递归复制配置：
+
+```text
+Path → str
+Mapping → 新 dict
+list → 新 list
+YAML 标量 → 原样
+其他对象 → TypeError
+```
+
+`save_config_snapshot()` 使用 `yaml.safe_dump(..., allow_unicode=True)`，保存最终生效配置。建议同时保存：
+
+```text
+raw_config.yaml
+resolved_config.yaml
+```
+
+原始快照用于查看用户输入，resolved 快照用于复现实际运行。
+
+---
+
+## 17. Builder 新契约
+
+### Builder 如何选择
+
+```text
+task_spec = services.task_registry.get(parsed.context.task_key)
+builder = task_spec.get_builder(parsed.context.mode_key)
+```
+
+`get_builder()` 返回函数或其他可调用对象，不返回 Builder 名称字符串。
+
+### `BuildContext`
+
+这是 Runner 创建的数据对象：
+
+```text
+parsed_config
+services
+logger
+experiment_paths
+device_summary
+```
+
+它不负责构造组件，只把 Builder 所需的运行依赖集中传入。
+
+### `build_component()`
+
+```text
+build_component(
+    category,
+    node_config,
+    build_context,
+    dependencies=None,
+) → Any
+```
+
+执行：
+
+```text
+1. type_key = node_config["type"]
+2. spec = services.component_registry.get(category, type_key)
+3. params = node_config["params"]
+4. 将 Tokenizer、Optimizer 等运行依赖显式加入调用参数
+5. return spec.build(params, build_context/dependencies)
+```
+
+返回值是真实组件实例，例如 Tokenizer、Model 或 Optimizer。
+
+Task Builder 负责依赖连接：
+
+```text
+Tokenizer 实例 → Dataset/Collator
+Tokenizer.vocab_size/pad_token_id → Model
+Task.parameters() → Optimizer
+Optimizer → Scheduler
+```
+
+### Train Builder 的典型执行
+
+```text
+build tokenizer
+→ build datasets
+→ build collator
+→ 创建 DataLoaders
+→ build model
+→ build losses
+→ 创建 Task
+→ build metrics
+→ build optimizer
+→ build scheduler
+→ 创建 Trainer
+→ 返回 TrainBuildResult
+```
+
+每一步都消费前面返回的对象，不只是按名称排列。
+
+### Test/Inference 的训练配置
+
+```text
+current_parsed = load_config(test_or_inference_yaml)
+→ train_config_path = current_parsed.config["run"]["checkpoint"]["train_config"]
+→ train_parsed = load_config(train_config_path, expected_mode="train", validate_runtime=False)
+→ 检查两者 task.type 一致
+→ 用 train_parsed 构造 Tokenizer/Model/Task
+→ 用 current_parsed 构造 Dataset/Metrics/Device/Decoding
+→ 加载 checkpoint.path 权重
+```
+
+不允许当前 Test/Inference YAML 覆盖模型结构参数。
+
+---
+
+## 18. 建议文件结构
 
 ```text
 main/parse/
-├── parser.py                 # 训练入口和兼容导出
-├── test_parser.py            # 测试入口和兼容导出
-├── inference_parser.py       # 推理入口和兼容导出
-├── common.py                 # YAML、路径、公共解析工具
-├── schemas.py                # 公共 Schema 和组件 Schema
-├── task_schemas.py           # mode/task 组合 Schema
-├── normalize.py              # 结构规范化和默认值
-├── validate.py               # 校验总入口
-├── component_validators.py   # 组件语义校验
-└── parser_refactor_plan.md   # 本方案
+├── api.py
+├── context.py
+├── errors.py
+├── bootstrap.py
+├── pipeline.py
+├── overrides.py
+├── snapshot.py
+│
+├── schema/
+│   ├── nodes.py
+│   ├── merge.py
+│   ├── compile.py
+│   ├── normalize.py
+│   └── walk.py
+│
+├── specs/
+│   ├── component.py
+│   ├── task.py
+│   ├── mode.py
+│   └── validator.py
+│
+├── registries/
+│   ├── base.py
+│   ├── components.py
+│   ├── tasks.py
+│   └── modes.py
+│
+├── paths/
+│   ├── graph.py
+│   ├── resolver.py
+│   └── derivers.py
+│
+├── validation/
+│   ├── pipeline.py
+│   ├── common.py
+│   └── runtime.py
+│
+├── builtins/
+│   ├── root_schema.py
+│   ├── modes/
+│   ├── tasks/
+│   └── components/
+│
+├── parser_refactor_plan.md
+└── validate_config_guide.md
 ```
 
-不要求一次性创建全部文件。推荐渐进迁移，避免同时破坏训练、测试和推理入口。
-
-### 3.1 `common.py`
-
-负责无任务差异的工具：
-
-```text
-load_yaml()
-parse_args() 或公共命令行参数构造
-relative_to_absolute_path()
-路径字段处理工具
-配置错误路径格式化工具
-```
-
-不负责：
-
-```text
-MLM/QA 判断
-Loss/Metric 参数校验
-训练/测试业务规则
-```
-
-### 3.2 `schemas.py`
-
-保存固定结构模板，例如：
-
-```text
-COMMON_SCHEMA
-MODEL_COMMON_SCHEMA
-TOKENIZER_SCHEMA
-DATALOADER_SCHEMA
-LOSSES_SCHEMA
-METRICS_SCHEMA
-CUDA_SCHEMA
-```
-
-Schema 只描述：
-
-```text
-允许哪些字段
-哪些字段必需
-普通字段默认值
-dict/list 的外层结构
-```
-
-不要在 Schema 中实现复杂的 `task` 条件判断。
-
-### 3.3 `task_schemas.py`
-
-保存模式和任务组合的配置结构：
-
-```text
-MLM_TRAIN_SCHEMA
-QA_TRAIN_SCHEMA
-MLM_TEST_SCHEMA
-QA_TEST_SCHEMA
-MLM_INFERENCE_SCHEMA
-QA_INFERENCE_SCHEMA（需要时再添加）
-```
-
-每个 Schema 只包含该模式和任务真正使用的字段。
-
-### 3.4 `normalize.py`
-
-负责：
-
-```text
-选择 Schema
-递归检查固定结构
-补充普通字段默认值
-保留多态 params 原样
-规范化 mode/task
-解析配置路径
-```
-
-不负责：
-
-```text
-ignore_index 的业务约束
-ExactMatch 的 params 规则
-QA 数据集 JSONL 内容校验
-```
-
-### 3.5 `validate.py`
-
-负责组合校验：
-
-```text
-读取 mode 和 base_task
-调用公共组件校验器
-调用任务专属校验器
-调用模式专属校验器
-执行跨字段约束
-```
-
-### 3.6 `component_validators.py`
-
-建议逐步拆成以下函数：
-
-```text
-validate_model()
-validate_tokenizer()
-validate_dataset()
-validate_dataloader()
-validate_losses()
-validate_metrics()
-validate_optimizer()
-validate_scheduler()
-validate_train()
-validate_valid()
-validate_test()
-validate_checkpoint()
-validate_cuda()
-```
-
-如果文件过长，再拆成：
-
-```text
-component_validators/
-├── model.py
-├── data.py
-├── optimization.py
-├── metrics.py
-└── runtime.py
-```
-
-当前不需要一开始就拆成更多文件。
+实现中允许先少量文件，后续再拆；但模块职责必须保持。
 
 ---
 
-## 4. Schema 设计原则
+## 19. 公共 API
 
-### 4.1 训练、测试、推理分开
-
-训练配置需要：
+## 19.1 `load_config`
 
 ```text
-model
-tokenizer
-dataset
-dataloader
-losses
-metrics
-optimizer
-scheduler
-train
-valid
-test
-cuda
+load_config(
+    yaml_path,
+    *,
+    expected_mode=None,
+    overrides=None,
+    validate_runtime=True,
+) → ParsedConfig
 ```
 
-测试配置需要：
+完整流程：
 
 ```text
-name
+load_raw_yaml
+→ bootstrap_config
+→ collect_specs
+→ compile_schema
+→ normalize_structure
+→ normalize_polymorphic_nodes
+→ apply_overrides
+→ resolve_paths
+→ validate_config
+→ fingerprint_schema
+→ ParsedConfig
+```
+
+## 19.2 入口接口
+
+```text
+parse_train_args() → args
+parse_test_args() → args
+parse_inference_args() → args
+```
+
+三者只定义真实使用的 CLI 参数。
+
+## 19.3 注册接口
+
+```text
+register_mode(spec)
+register_task(spec)
+register_component(spec)
+```
+
+注册在程序启动、配置加载之前完成。
+
+---
+
+## 20. 内置 Schema 贡献
+
+本节不是重新定义固定的任务总 Schema，而是说明内置 Spec 如何贡献字段。实现时应先完成 Root/Mode 的公共结构，再由 Task 和 Component 动态增加字段。
+
+## 20.1 Root Schema
+
+固定：
+
+```text
+version
+experiment
+run
 task
-checkpoint
-dataset
-dataloader
-losses
-metrics
-cuda
 ```
 
-推理配置根据现有 `inference_parser.py` 的真实 Builder 需求定义，不要直接复用训练 Schema。
+其余分区由 ModeSpec 增加。
 
-测试配置不应被强制要求：
+## 20.2 Train ModeSpec
+
+增加：
 
 ```text
-optimizer
-scheduler
-train
-valid
+components
+data
+optimization
+evaluation
+runtime
 ```
 
-训练配置不应因为测试入口而强制要求：
+声明：
 
 ```text
-checkpoint
+run.resume_from 可选
+run.checkpoint 禁止
 ```
 
-### 4.2 MLM 和 QA 的 Dataset Schema 分开
+## 20.3 Test ModeSpec
 
-#### MLM Dataset
-
-只包含 MLM 真正使用的字段：
+增加：
 
 ```text
-type
-dataset_path
-train_path
-valid_path
-test_path
-max_seq_length
-mlm_prob
+run.checkpoint
+components.losses
+data
+evaluation.metrics.test
+runtime
 ```
 
-#### QA Dataset
-
-只包含 QA 当前 Builder 和 Dataset 真正使用的字段：
+禁止：
 
 ```text
-type
-dataset_path
-train_path
-valid_path
-test_path
-```
-
-如果后续 QA Dataset 真正增加 `max_seq_length` 参数，再把它加入 QA Schema。不能因为 MLM 有 `max_seq_length`，就默认所有 QA 配置也必须有它。
-
-#### QA Test Dataset
-
-当前 QA Test Builder 只需要：
-
-```text
-type
-dataset_path
-test_path
-```
-
-若 QA 测试后续需要新的测试字段，再单独加入 QA Test Schema。
-
-### 4.3 字段是否“存在”与字段是否“有效”分开
-
-Schema/normalize 阶段负责：
-
-```text
-字段存在
-字段是否允许出现
-普通字段的默认值
-基础 dict/list 结构
-```
-
-Validator 阶段负责：
-
-```text
-字符串是否非空
-数字范围
-支持项
-路径存在性
-字段间关系
-任务语义
-```
-
-### 4.4 不使用 MLM 模板描述所有 Metric
-
-Metrics 的公共结构是：
-
-```text
-metrics:
-  train:
-    - type
-      params
-  valid:
-    - type
-      params
-  test:
-    - type
-      params
-```
-
-`params` 只在结构层被视为：
-
-```text
-必须存在的 dict 字段
-```
-
-`params` 内部不能使用 `TokenAccuracy` 模板递归补全。
-
-具体规则放在 `validate_metrics()`：
-
-```text
-TokenAccuracy
-→ ignore_index 规则
-
-ExactMatch
-→ 当前无参数规则
-
-CharacterF1
-→ 当前无参数规则
-```
-
-同理，Loss 的 `params` 也不应由普通递归深入处理。
-
----
-
-## 5. 递归规范化器设计
-
-现有 `check_and_add_config()` 可以被替换为一个只处理固定结构的函数，例如逻辑接口：
-
-```text
-normalize_node(config, schema, path)
-```
-
-其职责：
-
-```text
-dict 节点：检查字段集合，递归固定子节点
-list 节点：检查列表类型和元素结构
-普通叶子：缺失时填默认值，或检查必填
-params 节点：只检查 dict，不递归内部
-```
-
-### 5.1 `params` 的处理
-
-对于 Loss 和 Metric：
-
-```text
-params 字段不存在
-→ 结构错误
-
-params 为 None
-→ 结构错误
-
-params 不是 dict
-→ 结构错误
-
-params 是 dict
-→ 保留原样，不进入固定模板递归
-```
-
-之后：
-
-```text
-validate_losses()
-validate_metrics()
-```
-
-分别处理具体参数。
-
-这样不再需要依赖：
-
-```python
-loss_completed
-key.startswith("config.metrics")
-```
-
-其中 `key` 仍可保留作为错误路径，但不应再承担识别递归上下文的主要职责。
-
-### 5.2 多态列表的处理
-
-`losses` 和 `metrics` 的列表元素结构是稳定的，但元素内部 `params` 是多态的。
-
-因此递归器只处理：
-
-```text
-列表存在
-列表非空
-元素为 dict
-元素公共字段存在
-```
-
-并在 `params` 处停止深入。
-
----
-
-## 6. 统一加载入口
-
-最终底层加载接口建议为：
-
-```text
-load_config(yaml_path, mode)
-```
-
-处理流程：
-
-```text
-load_yaml()
-→ 读取原始 task
-→ 标准化 mode/base_task
-→ 选择对应 Schema
-→ normalize_config()
-→ resolve_config_paths()
-→ validate_config()
-→ 返回字典配置
-```
-
-### 6.1 外部兼容接口
-
-为了不立即修改所有调用方，可以保留：
-
-```text
-parse.parser.load_config(path)
-→ load_config(path, mode="train")
-
-parse.test_parser.load_config(path)
-→ load_config(path, mode="test")
-
-parse.inference_parser.load_config(path)
-→ load_config(path, mode="inference")
-```
-
-这样 `start_train.py`、`start_test.py` 和推理入口无需同时重写。
-
-### 6.2 测试 Builder 读取训练配置
-
-QA Test Builder 当前会再次读取：
-
-```text
-checkpoint.config_path
-```
-
-并调用主 Parser 读取训练配置。
-
-重构后应明确：
-
-```text
-测试配置
-→ 使用 mode="test"
-
-checkpoint 指向的训练配置
-→ 使用 mode="train"
-```
-
-不能因为当前调用链方便，就用测试 Schema 解析训练配置。
-
----
-
-## 7. 路径解析设计
-
-路径解析应从配置结构校验中独立出来：
-
-```text
-normalize_config()
-→ 保持相对路径或根据规则形成路径字段
-
-resolve_config_paths()
-→ 统一转为绝对 pathlib.Path
-
-validate_paths()
-→ 检查文件/目录存在性和类型
-```
-
-### 7.1 训练配置路径字段
-
-根据具体 Schema 处理：
-
-```text
-model.model_path
-tokenizer.vocab_file_path
-dataset.dataset_path
-dataset.train_path
-dataset.valid_path
-dataset.test_path
-```
-
-### 7.2 QA Test 路径字段
-
-只处理当前真实使用的字段：
-
-```text
-checkpoint.path
-checkpoint.config_path
-dataset.dataset_path
-dataset.test_path
-```
-
-不应让路径处理函数无条件访问：
-
-```text
-dataset.train_path
-model.model_path
-optimizer
-```
-
-### 7.3 相对路径基准
-
-应明确记录：
-
-```text
-model.model_path、tokenizer.vocab_file_path、dataset.dataset_path
-→ 相对于当前 YAML 所在目录
-
-dataset.train_path、dataset.valid_path、dataset.test_path
-→ 相对于 dataset.dataset_path
-checkpoint.path、checkpoint.config_path
-→ 相对于当前 YAML 所在目录
-```
-
-这个规则只能在路径解析层处理，不应散落到 Builder 中。
-
----
-
-## 8. Validator 设计
-
-### 8.1 公共 Validator
-
-公共校验只检查组件自身语义：
-
-```text
-validate_model()
-validate_tokenizer()
-validate_dataloader()
-validate_losses()
-validate_metrics()
-validate_cuda()
-```
-
-### 8.2 任务 Validator
-
-任务 Validator 只检查任务相关约束：
-
-```text
-validate_mlm_config()
-validate_qa_config()
-```
-
-例如：
-
-```text
-MLM
-→ dataset.mlm_prob
-→ MLM 数据集类型
-→ MLM 模型类型
-
-QA
-→ QA 数据集类型
-→ QA 模型类型
-→ QA 训练/测试数据结构
-```
-
-不要把所有任务规则塞进公共 `validate_dataset()`。
-
-### 8.3 模式 Validator
-
-```text
-validate_train_mode()
-validate_test_mode()
-validate_inference_mode()
-```
-
-例如：
-
-```text
-train
-→ optimizer、scheduler、train 等字段
-
-test
-→ checkpoint、test 数据和 test metrics
-
+optimization
 inference
-→ inference 专属字段
+当前 YAML 中的 model/tokenizer
 ```
 
-### 8.4 跨字段校验
+## 20.4 Inference ModeSpec
 
-集中在任务/模式校验的后面处理：
+增加：
 
 ```text
-model.hidden_size % model.num_heads == 0
+run.checkpoint
+inference
+runtime
 ```
 
-只在双方字段都属于当前 Schema 时检查：
+禁止：
 
 ```text
-dataset.max_seq_length <= model.max_position_embeddings
+optimization
+evaluation
+data
+components
 ```
 
-不能对不包含 `max_seq_length` 的 QA Schema 无条件访问该字段。
+## 20.5 TaskSpec 贡献
 
----
-
-## 9. Metrics 和 Losses 的具体处理
-
-### 9.1 Losses
-
-普通结构层处理：
+TaskSpec 只增加：
 
 ```text
-losses 是非空 list
-每个元素是 dict
-每个元素包含 name/type/weight/params
-params 是 dict
-```
-
-专属校验层处理：
-
-```text
-loss.type 是否受支持
-loss.name 是否唯一
-weight 是否有效
-params 是否符合对应 loss.type
-```
-
-默认参数填充如果继续保留，应放在：
-
-```text
-normalize_losses()
-```
-
-而不是放在普通递归器内部。
-
-### 9.2 Metrics
-
-普通结构层处理：
-
-```text
-metrics.train/valid/test 的 list 结构
-Metric 项的 type/params 字段
-params 是 dict
-```
-
-专属校验层处理：
-
-```text
-Metric type 是否受支持
-TokenAccuracy 的参数规则
-ExactMatch 的参数规则
-CharacterF1 的参数规则
-```
-
-如果某个 Metric 没有参数：
-
-```text
-params: {}
-```
-
-是合法配置。
-
-### 9.3 不要求 Parser 静默忽略错误参数
-
-当前是否显式拒绝未知参数，可以先保持已有项目决策，不在重构第一阶段扩大范围。
-
-但最终应保证：
-
-```text
-Parser 成功
-→ Builder 使用这些 params 不会产生明显的构造错误
-```
-
----
-
-## 10. 迁移路线
-
-不建议一次性删除旧 Parser。推荐以下顺序。
-
-### 阶段一：建立公共底层工具
-
-新增：
-
-```text
-common.py
-```
-
-先迁移：
-
-```text
-load_yaml()
-路径工具
-```
-
-保持现有 Parser 对外接口不变。
-
-### 阶段二：抽取公共 Schema 和递归器
-
-新增：
-
-```text
-schemas.py
-normalize.py
-```
-
-先让新递归器支持：
-
-```text
-固定 dict/list
-普通默认值
-params 透明节点
-错误路径
-```
-
-用现有 MLM 配置进行对比验证。
-
-### 阶段三：拆分模式 Schema
-
-建立：
-
-```text
-train schema
-test schema
-inference schema
-```
-
-确保测试配置不再要求训练字段，训练配置不再依赖测试字段。
-
-### 阶段四：拆分 MLM/QA Dataset Schema
-
-建立：
-
-```text
-MLM dataset schema
-QA dataset schema
-```
-
-解决：
-
-```text
-QA 被迫携带 mlm_prob
-QA 被迫携带 MLM 专属字段
-MLM/QA 共用不兼容字段
-```
-
-### 阶段五：抽取组件 Validator
-
-先抽取：
-
-```text
-validate_losses()
-validate_metrics()
-validate_dataset()
-```
-
-再抽取：
-
-```text
-validate_model()
-validate_tokenizer()
-validate_optimizer()
-validate_scheduler()
-```
-
-### 阶段六：迁移 QA Test Parser
-
-优先迁移 QA Test，因为它当前最能暴露：
-
-```text
-测试 Schema 与训练 Schema 混淆
-QA Dataset 字段与 MLM Dataset 字段混淆
-ExactMatch/CharacterF1 params 规则不一致
-```
-
-先确认：
-
-```text
-QA Test YAML 可以被解析
-```
-
-再运行 Builder。
-
-### 阶段七：迁移 QA Train Parser
-
-确认：
-
-```text
-QA Train YAML 不再要求 mlm_prob
-QA Train 仍然能被 QA Builder 使用
-```
-
-### 阶段八：迁移 MLM Train/Test 和 Inference
-
-逐个模式验证，确认 Builder 接口没有变化。
-
-### 阶段九：删除旧逻辑
-
-只有所有入口验证完成后，才删除：
-
-```text
-loss_completed
-旧的重复 validate_config()
-旧的 MLM 全局 Dataset Schema
-parser.py/test_parser.py 中重复的组件校验
-```
-
----
-
-## 11. 兼容性要求
-
-Parser 重构期间，Builder 的输出仍保持普通字典，不引入配置对象替代它们：
-
-```text
-config_dict["model"]
-config_dict["dataset"]
-config_dict["metrics"]
-```
-
-这样以下模块不需要因为 Parser 重构同步改写：
-
-```text
-main/tasks/MLM_PreTrain/builder.py
-main/tasks/MLM_PreTrain/test_builder.py
-main/tasks/QA_SFT/builder.py
-main/tasks/QA_SFT/test_builder.py
-main/start_test.py
-main/Trainer/
-main/Tester/
-```
-
-如果重构需要新增内部字段，例如：
-
-```text
-mode
-base_task
-```
-
-应确保 Builder 不会因为顶层多出内部字段而受到影响；如果现有递归规则禁止未知字段，则应在返回前决定是否保留这些字段。
-
----
-
-## 12. 测试策略
-
-Parser 重构必须先测试配置解析，再测试 Builder，最后测试运行链路。
-
-### 12.1 结构测试
-
-验证：
-
-```text
-缺少必需字段
-未知字段
-错误 dict/list 类型
-params 缺失
-params 为 None
-params 为非 dict
-```
-
-### 12.2 任务字段隔离测试
-
-验证：
-
-```text
-MLM 配置缺少 mlm_prob → 按 MLM 规则处理
-QA 配置不包含 mlm_prob → 可以通过
-QA 配置不包含不使用的 max_seq_length → 可以通过
-```
-
-### 12.3 模式字段隔离测试
-
-验证：
-
-```text
-QA Test 不要求 optimizer/scheduler/train/valid
-MLM Train 不要求 checkpoint
-```
-
-### 12.4 多态 params 测试
-
-验证：
-
-```text
-TokenAccuracy + ignore_index
-ExactMatch + {}
-CharacterF1 + {}
-```
-
-并确认：
-
-```text
-params 不会被错误套用 TokenAccuracy 模板
-```
-
-### 12.5 路径测试
-
-验证：
-
-```text
-相对路径绝对化
-dataset split 路径基于 dataset_path
-checkpoint.config_path 默认推导
-QA Test 只处理实际存在的路径字段
-```
-
-### 12.6 Builder 兼容测试
-
-对每个模式和任务确认返回配置仍能被 Builder 使用：
-
-```text
-MLM Train
-MLM Test
-QA Train
-QA Test
-```
-
----
-
-## 13. 完成标准
-
-Parser 重构完成后应满足：
-
-- `parser.py`、`test_parser.py`、`inference_parser.py` 不再复制整套校验逻辑；
-- 配置模式、任务类型和组件结构明确分离；
-- QA 不再被迫接受 MLM 专属字段；
-- MLM 不会因为 QA 专属结构而失去原有配置能力；
-- `losses.params` 和 `metrics.params` 不再被错误地套用固定模板递归；
-- 普通递归器不再承载任务业务语义；
-- 路径解析独立于语义校验；
-- 训练、测试、推理使用统一底层加载流程；
-- Builder 继续使用现有字典配置接口；
-- 所有错误包含完整配置路径；
-- 配置校验不修改传入配置；
-- QA Test YAML 能在不携带 MLM 专属字段的情况下通过解析；
-- MLM Train/Test 现有配置行为不被破坏。
-
----
-
-## 14. 推荐的第一批实际改动
-
-不要一开始重写所有校验。第一批建议只建立公共骨架：
-
-```text
-1. 抽取 common.py 中的 YAML 和路径工具
-2. 定义 mode/base_task 标准化函数
-3. 定义 train/test/inference 的最小 Schema 入口
-4. 实现新的固定结构递归器
-5. 让 params 成为不递归节点
-6. 抽取 validate_losses() 和 validate_metrics()
-7. 先迁移 QA Test 配置解析
-```
-
-第一批完成后，暂时保留旧的：
-
-```text
-parser.py
- test_parser.py
- inference_parser.py
-```
-
-通过新旧解析结果对比确认兼容性，再继续迁移 QA Train 和 MLM 配置。
-
----
-
-## 15. 最终架构
-
-最终配置处理链应为：
-
-```text
-入口 Parser
-→ 确定 mode
-→ 读取 task
-→ 标准化 base_task
-→ 选择 mode/task Schema
-→ normalize 固定结构和默认值
-→ resolve_config_paths 路径绝对化
-→ validate 公共组件
-→ validate 任务和模式
-→ 执行跨字段约束
-→ 返回字典 config
-```
-
-职责边界固定为：
-
-```text
-Schema
-→ 配置形状
-
-Normalize
-→ 固定结构和普通默认值
-
-Path Resolver
-→ 路径绝对化
-
-Component Validator
-→ 组件自身语义
-
-Task Validator
-→ 任务专属语义
-
-Mode Validator
-→ 训练/测试/推理专属语义
-
+task.params Schema
+能力要求
+任务 Validator
 Builder
-→ 使用已经校验完成的配置构造运行组件
+可能的任务专属分区字段
 ```
 
-这个方案的核心不是增加更多配置类，而是把当前已经混在一起的职责拆开，并让 QA、MLM、训练、测试和推理分别拥有自己的有效配置范围。
+TaskSpec 不复制完整 Train/Test Schema。
 
 ---
 
-# 十六、YAML 结构优化的详细方案
+## 21. MLM 和 QA 作为内置扩展示例
 
-## 16.1 YAML 结构优化的目标
+## 21.1 MLM
 
-YAML 优化不是为了改变配置的书写风格，而是为了让 YAML 清楚表达三件事：
-
-```text
-当前运行模式是什么
-当前业务任务是什么
-当前组件真正需要哪些字段
-```
-
-最终目标是：
+注册：
 
 ```text
-QA 配置不携带 MLM 专属字段
-MLM 配置不被 QA 专属字段污染
-训练配置不要求测试专属字段
-测试配置不要求训练专属字段
-推理配置不要求训练或测试字段
-Builder 读取路径保持稳定
+TaskSpec: mlm_pretrain
+Tokenizer: wordpiece
+Model: tinybert_mlm
+Dataset: zhwiki_mlm
+Collator: dynamic_mlm
+Loss: cross_entropy
+Metric: token_accuracy
 ```
 
-## 16.2 保留当前的顶层组件式结构
-
-当前建议继续使用平面组件式 YAML：
-
-```yaml
-name: ...
-task: ...
-model: ...
-tokenizer: ...
-dataset: ...
-dataloader: ...
-losses: ...
-metrics: ...
-optimizer: ...
-scheduler: ...
-train: ...
-valid: ...
-test: ...
-checkpoint: ...
-cuda: ...
-```
-
-不建议现在改成：
-
-```yaml
-mode:
-  train:
-    task:
-      qa_sft:
-```
-
-也不建议把所有内容放入：
-
-```yaml
-tasks:
-  qa_sft:
-    ...
-```
-
-原因是当前 Builder 已经直接读取：
+能力：
 
 ```text
-config_dict["model"]
-config_dict["dataset"]
-config_dict["metrics"]
-config_dict["losses"]
+model.masked_lm
+dataset.token_sequence
+collator.dynamic_mlm
 ```
 
-保留顶层组件式结构，可以让 Parser 重构只改变“哪些字段合法”，而不强迫 Builder 同时改成新的嵌套访问方式。
+## 21.2 QA
 
-## 16.3 运行模式与任务名称
-
-当前外部任务名称已经被入口和 Registry 使用：
+注册：
 
 ```text
-mlm_pretrain
-mlm_pretrain_test
-qa_sft
-qa_sft_test
+TaskSpec: qa_sft
+Tokenizer: qa_wordpiece
+Model: tinybert_qa
+Dataset: cmrc2018
+Collator: qa_span
+Metric: exact_match / character_f1
 ```
 
-第一阶段不必修改 YAML 中的 `task` 写法，也不必马上新增顶层 `mode` 字段。
-
-Parser 内部可以把任务标准化为：
+能力：
 
 ```text
-原始 task
-→ mode
-→ base_task
+tokenizer.offset_mapping
+model.extractive_qa
+dataset.extractive_qa
+collator.qa_span_batching
 ```
 
-映射关系：
+## 21.3 GPT 扩展验证
+
+未来 GPT 接入只新增：
 
 ```text
-mlm_pretrain
-→ mode=train, base_task=mlm_pretrain
-
-mlm_pretrain_test
-→ mode=test, base_task=mlm_pretrain
-
-qa_sft
-→ mode=train, base_task=qa_sft
-
-qa_sft_test
-→ mode=test, base_task=qa_sft
+GPT ComponentSpecs
+GPT TaskSpec
+GPT Validators
+GPT Builders
+GPT YAML
 ```
 
-这样校验逻辑只需要判断：
+不得修改：
 
 ```text
-mode == "train" / "test" / "inference"
-base_task == "mlm_pretrain" / "qa_sft"
+bootstrap.py
+schema/merge.py
+schema/normalize.py
+paths/resolver.py
+validation/pipeline.py
+api.load_config
 ```
 
-而不是在每个校验分支里重复判断四个完整任务名称。
+如果必须修改，说明协议不够通用，需要先讨论抽象缺口。
 
-如果未来希望让 YAML 更明确，再考虑增加：
+---
 
-```yaml
-mode: test
-task: QA_SFT
-```
+## 22. 错误类型
 
-但这属于第二阶段改动，不能在第一阶段和 Parser 内部重构同时扩大范围。
-
-## 16.4 四类核心 YAML
-
-当前应明确设计四类核心配置：
+建议定义：
 
 ```text
-MLM Train
-QA Train
-MLM Test
-QA Test
+ConfigError
+YamlLoadError
+BootstrapError
+UnknownRegistryKeyError
+ModeTaskMismatchError
+SchemaError
+SchemaConflictError
+MissingFieldError
+UnknownFieldError
+TypeMismatchError
+NullNotAllowedError
+ParameterNormalizationError
+PathResolutionError
+PathDependencyError
+ConfigValidationError
+RuntimeValidationError
 ```
 
-Inference 继续根据当前 `inference_parser.py` 和对应 Builder 的真实需求单独定义，不应直接复制 Train 或 Test Schema。
-
-### 16.4.1 MLM Train
-
-MLM Train 可以包含：
-
-```text
-name
-task
-model
-tokenizer
-dataset
-dataloader
-losses
-metrics
-optimizer
-scheduler
-train
-valid
-test
-cuda
-```
-
-MLM Dataset 中真正属于 MLM 的字段：
-
-```text
-type
-dataset_path
-train_path
-valid_path
-test_path
-max_seq_length
-mlm_prob
-```
-
-`mlm_prob` 只能由 MLM 的 Schema 和校验器负责。它对应：
-
-```text
-MLMCollator(mlm_prob=...)
-```
-
-### 16.4.2 QA Train
-
-QA Train 可以包含：
-
-```text
-name
-task
-model
-tokenizer
-dataset
-dataloader
-losses
-metrics
-optimizer
-scheduler
-train
-valid
-test
-cuda
-```
-
-当前 QA Dataset 真正使用：
-
-```text
-type
-dataset_path
-train_path
-valid_path
-test_path
-```
-
-当前 `QADataset` 和 `QA_SFT.builder.py` 不使用：
-
-```text
-mlm_prob
-```
-
-当前 `QADataset` 构造函数也不接收：
-
-```text
-max_seq_length
-```
-
-因此在 QA 当前 Schema 中不应要求这两个字段。以后 QA Dataset 真正增加长度参数时，再根据实际 Builder 接口加入 QA Schema。
-
-### 16.4.3 MLM Test
-
-MLM Test 当前需要：
-
-```text
-name
-task
-checkpoint
-dataset
-dataloader
-losses
-metrics
-cuda
-```
-
-MLM Test Dataset 需要：
-
-```text
-type
-dataset_path
-test_path
-max_seq_length
-mlm_prob
-```
-
-因为当前 `MLM_PreTrain.test_builder` 会使用测试配置中的 Dataset 和 Loss，同时从训练配置中读取 Tokenizer 和 Model。
-
-### 16.4.4 QA Test
-
-QA Test 当前需要：
-
-```text
-name
-task
-checkpoint
-dataset
-dataloader
-losses
-metrics
-cuda
-```
-
-QA Test Dataset 当前只需要：
-
-```text
-type
-dataset_path
-test_path
-```
-
-QA Test 不应要求：
-
-```text
-train_path
-valid_path
-max_seq_length
-mlm_prob
-optimizer
-scheduler
-train
-valid
-```
-
-当前 QA Test Builder 已经使用：
-
-```text
-config_dict["dataset"]["test_path"]
-```
-
-而不是 `train_path`。
-
-## 16.5 `model` 字段的处理
-
-当前 MLM 和 QA 都使用 Transformer 模型配置，但最终应由任务 Schema 决定模型字段集合，而不是仅凭模型目录模板决定。
-
-公共模型字段可以包括：
-
-```text
-type
-name
-model_path
-hidden_size
-max_position_embeddings
-type_vocab_size
-num_heads
-intermediate_size
-num_layers
-embedding_dropout
-attention_dropout
-hidden_dropout
-layer_norm_eps
-backbone_path
-```
-
-但是否要求每个字段，应以对应模型 Builder 的构造函数为准。
-
-Parser 不应因为某个 MLM 模型需要字段，就无条件要求所有 QA 模型也必须使用同样字段。更长期的方案是：
-
-```text
-model.type → 选择模型族
-model.name → 选择具体模型
-model.name 对应模型 Schema/Validator
-```
-
-第一阶段可以继续使用任务 Schema，第二阶段再按模型名称细分。
-
-## 16.6 `tokenizer` 字段的处理
-
-当前 QA 和 MLM 都通过同一类 Tokenizer Registry 构造 Tokenizer，因此可以先保留公共 Tokenizer Schema：
-
-```text
-type
-vocab_file_path
-do_lower_case
-strip_accents
-max_input_chars_per_word
-```
-
-但是 Parser 仍要区分：
-
-```text
-Tokenizer 配置结构合法
-Tokenizer 是否受当前任务支持
-```
-
-Tokenizer 文件路径必须由路径解析层转换为绝对 `Path`，语义校验由 Tokenizer Validator 处理。
-
-## 16.7 `dataset` 字段的处理
-
-Dataset 是当前 YAML 重构最需要拆分的组件。
-
-### 公共 Dataset 字段
-
-可以先保留：
-
-```text
-type
-dataset_path
-```
-
-### Split 字段
-
-按模式和任务决定：
-
-```text
-MLM Train:
-    train_path, valid_path, test_path
-
-QA Train:
-    train_path, valid_path, test_path
-
-MLM Test:
-    test_path
-
-QA Test:
-    test_path
-```
-
-### 任务专属字段
-
-```text
-MLM:
-    max_seq_length
-    mlm_prob
-
-QA:
-    当前没有上述两个字段
-```
-
-### 路径解析
-
-路径解析必须根据 Schema 中实际存在的字段进行，不能无条件访问：
-
-```text
-dataset.train_path
-dataset.valid_path
-dataset.test_path
-```
-
-QA Test 当前只解析：
-
-```text
-dataset.dataset_path
-dataset.test_path
-```
-
-Dataset 文件相对路径规则保持：
-
-```text
-dataset.dataset_path
-→ 相对于当前 YAML 文件目录
-
-dataset.train_path、valid_path、test_path
-→ 相对于 dataset.dataset_path
-```
-
-## 16.8 `dataloader` 字段的处理
-
-公共 DataLoader 字段可保持：
-
-```text
-batch_size
-num_workers
-pin_memory
-```
-
-训练 DataLoader 额外允许：
-
-```text
-shuffle
-drop_last
-```
-
-测试 DataLoader 当前不需要强制要求：
-
-```text
-shuffle
-drop_last
-```
-
-因为当前测试 Builder 未显式读取它们，PyTorch 默认行为已经是：
-
-```text
-shuffle=False
-drop_last=False
-```
-
-如果未来希望 YAML 明确表达测试行为，可以加入测试 Schema，但不能让训练专属字段自动成为测试必填字段。
-
-## 16.9 `losses` 字段的处理
-
-Loss 外层结构保持：
-
-```yaml
-losses:
-  - name: ...
-    type: ...
-    weight: ...
-    params: ...
-```
-
-通用递归只处理：
-
-```text
-列表结构
-公共字段存在
-params 是 dict
-```
-
-不进入 `params` 内部递归。
-
-`validate_losses()` 根据 `loss.type` 处理：
-
-```text
-CrossEntropyLoss
-→ ignore_index
-```
-
-Loss 默认值策略必须明确：
-
-```text
-整个 losses 缺失
-→ 根据当前模式/任务决定是否允许
-
-loss 项存在但 params 为空
-→ 不使用不匹配的其他 Loss 参数模板
-→ 由 validate_losses() 判断
-```
-
-## 16.10 `metrics` 字段的处理
-
-Metrics 外层结构可以在 Train/Test 之间复用：
-
-```yaml
-metrics:
-  train:
-    - type: ...
-      params: ...
-  valid:
-    - type: ...
-      params: ...
-  test:
-    - type: ...
-      params: ...
-```
-
-但具体要求由模式决定：
-
-```text
-Train 通常需要 train/valid/test
-Test 只需要 test
-Inference 根据实际推理需求决定
-```
-
-`params` 统一作为透明字典：
-
-```text
-params 字段存在
-params 是 dict
-params 不进入普通固定模板递归
-```
-
-具体参数由 `validate_metrics()` 根据 Metric 类型处理：
-
-```text
-TokenAccuracy
-→ ignore_index
-
-ExactMatch
-→ 当前允许空 dict
-
-CharacterF1
-→ 当前允许空 dict
-```
-
-不要把 `TokenAccuracy.params` 作为所有 Metric 的默认模板。
-
-## 16.11 `checkpoint` 字段的处理
-
-Checkpoint 是 Test 的核心配置，不应出现在普通 Train Schema 中作为必需字段：
-
-```yaml
-checkpoint:
-  path: ...
-  config_path: ...
-```
-
-其中：
+每个异常保存：
 
 ```text
 path
-→ 当前测试使用的 checkpoint
-
-config_path
-→ 对应训练配置
-→ 可以允许 null，然后按现有规则推导
+message
+actual_value
+expected
+source
 ```
 
-QA Test Builder 当前会读取：
-
-```text
-config_dict["checkpoint"]["config_path"]
-```
-
-并用训练 Parser 加载训练配置。因此重构后必须保持：
-
-```text
-测试配置使用 test Schema
-训练 checkpoint 配置使用 train Schema
-```
-
-## 16.12 `optimizer`、`scheduler`、`train`、`valid`、`test`
-
-这些组件不能在所有模式中使用同一组必需规则。
-
-```text
-optimizer/scheduler/train
-→ 训练模式
-
-valid
-→ 训练模式，根据 do_validation 决定运行与否
-
-test
-→ 训练配置中表示是否在训练流程后测试
-→ 独立测试配置中不应被当成训练控制块
-```
-
-Test Parser 不应因为复用训练模板而要求：
-
-```text
-optimizer
-scheduler
-train
-valid
-```
-
-## 16.13 YAML 迁移检查表
-
-每个 YAML 迁移到新 Schema 前，按以下顺序检查：
-
-```text
-1. 确定 mode
-2. 确定 base_task
-3. 确定当前 Builder
-4. 列出 Builder 实际读取的配置路径
-5. 保留这些字段
-6. 删除其他任务专属字段
-7. 检查 params 是否为 dict
-8. 检查路径相对基准
-9. 运行 Parser 结构校验
-10. 再运行 Builder
-```
-
-不要根据注释判断字段是否必需，必须以当前 Builder、Dataset、Task 和入口的实际读取代码为准。
+最终入口负责统一格式化，不在底层错误文本中加入口语后缀。
 
 ---
 
-# 十七、Parser 重构的详细实现流程
+## 23. 详细实施顺序
 
-## 17.1 第一阶段：备份旧 Parser
+改动幅度很大，必须按基础协议到垂直链路逐步推进。
 
-在重构前由开发者自行备份：
+## 23.1 阶段零：冻结旧系统
+
+操作：
 
 ```text
-parser.py
-test_parser.py
-inference_parser.py
+保留 parse.copy
+保留当前入口引用
+记录现有五类 YAML
+记录各 Builder 字段消费路径
+不在旧 Parser 上继续增加功能
 ```
 
-备份文件只用于对照，不参与运行，不应被自动导入。
-
-## 17.2 第二阶段：抽取公共工具
-
-先抽取：
+完成标准：
 
 ```text
-load_yaml()
-relative_to_absolute_path()
-relative_to_absolute_path_full_dict()
+旧链路仍可作为行为对照
+新代码未接管入口
 ```
 
-确保三个入口使用同一套基础工具。
+## 23.2 阶段一：错误路径和 Schema 基础节点
 
-## 17.3 第三阶段：定义模式和任务标准化
-
-实现逻辑：
+实现顺序：
 
 ```text
-raw task
-→ mode
-→ base_task
+MISSING
+ConfigPath
+ConfigError
+ScalarSchema
+MappingSchema
+SequenceSchema
+EnumSchema
+RegistryKeySchema
+PathSchema
+PolymorphicSchema
 ```
 
-如果任务名称不受支持，在标准化阶段就抛出包含完整字段路径的错误。
+先只做节点构造和独立规范化，不接 Registry。
 
-## 17.4 第四阶段：定义四套核心 Schema
-
-先定义：
+测试重点：
 
 ```text
-MLM_TRAIN_SCHEMA
-QA_TRAIN_SCHEMA
-MLM_TEST_SCHEMA
-QA_TEST_SCHEMA
+输入不被修改
+缺失与 None 区分
+默认可变对象深拷贝
+未知字段
+列表索引路径
 ```
 
-不要先追求支持所有未来任务，也不要先建立复杂 Schema DSL。
+## 23.3 阶段二：Schema Merge 与 Compile
 
-## 17.5 第五阶段：实现固定结构 normalize
-
-新的 normalize 只负责：
+实现：
 
 ```text
-dict/list 类型
-允许字段
-必需字段
-普通默认值
-params 透明节点
-错误路径
+merge_schema
+SchemaConflictError
+compile_schema
+schema walk
+Path/Polymorphic/Validator 收集
 ```
 
-它不负责：
+先用人工小 Schema 测试冲突，不接真实任务。
+
+## 23.4 阶段三：Spec 与 Registry
+
+实现：
 
 ```text
-任务语义
-Loss 参数值
-Metric 参数值
-文件内容
-模型构造
+BaseRegistry
+ComponentSpec
+TaskSpec
+ModeSpec
+ValidatorSpec
+各类 Registry
 ```
 
-## 17.6 第六阶段：实现路径解析
+注册时立即验证 Spec 自身。
 
-根据选中的 Schema 只处理当前存在的路径字段：
+第一批只注册：
 
 ```text
-相对路径
-→ 绝对 pathlib.Path
+train/test/inference ModeSpec
+qa_sft TaskSpec
+QA Test 所需 ComponentSpec
 ```
 
-路径解析之后再进行路径存在性校验。
+## 23.5 阶段四：Bootstrap
 
-## 17.7 第七阶段：抽取组件 Validator
-
-先实现：
+实现：
 
 ```text
-validate_dataset()
-validate_losses()
-validate_metrics()
-```
-
-再实现：
-
-```text
-validate_model()
-validate_tokenizer()
-validate_dataloader()
-validate_checkpoint()
-validate_optimizer()
-validate_scheduler()
-```
-
-## 17.8 第八阶段：迁移 QA Test
-
-QA Test 是第一条迁移链路，因为它最容易暴露：
-
-```text
-测试字段与训练字段混淆
-QA Dataset 与 MLM Dataset 混淆
-ExactMatch/CharacterF1 的 params 规则问题
+BootstrapDescriptor
+bootstrap_config
+ComponentSelection
+ParseContext
 ```
 
 先验证：
 
 ```text
-QA Test YAML
-→ test Schema
-→ normalize
-→ resolve paths
-→ validate
+mode/task 解析
+别名解析
+mode/task 支持关系
+动态列表 type 扫描
+未知组件
 ```
 
-再验证：
+## 23.6 阶段五：结构与 params 规范化
+
+实现：
 
 ```text
-QA Test Builder
+normalize_structure
+normalize_polymorphic_nodes
 ```
 
-## 17.9 第九阶段：迁移 QA Train
-
-确认 QA Train YAML 不再被要求填写：
+重点验证：
 
 ```text
-mlm_prob
+params=None
+params={}
+params=部分参数
+未知参数
+无参数组件
+最终 params=dict
 ```
 
-也不被无条件要求填写当前 QA Builder 没有使用的字段。
+## 23.7 阶段六：Override
 
-## 17.10 第十阶段：迁移 MLM Train/Test
-
-保留 MLM 当前真实使用的：
+实现：
 
 ```text
-max_seq_length
-mlm_prob
+ConfigOverride
+apply_overrides
+--resume 转换
 ```
 
-确保迁移后 `MLMCollator` 仍能获得 `mlm_prob`。
+禁止覆盖判别字段。
 
-## 17.11 第十一阶段：迁移 Inference
+## 23.8 阶段七：路径依赖图
 
-Inference 单独读取当前入口和 Builder 的真实配置需求，不直接复制 Test Schema。
-
-## 17.12 第十二阶段：清理旧逻辑
-
-只有四类配置都能通过解析和 Builder 构造后，才删除：
+实现：
 
 ```text
-loss_completed
-旧 CUSTOM_DICT 的任务混合字段
-重复 validate_config()
-重复路径处理
-parser.py/test_parser.py/inference_parser.py 中的重复逻辑
+收集 PathSchema
+建立依赖
+拓扑排序
+解析 config_dir 基准
+解析 field reference 基准
+train_config deriver
+```
+
+重点验证相对路径和循环依赖。
+
+## 23.9 阶段八：Validator Pipeline
+
+实现：
+
+```text
+validator 收集
+稳定排序
+阶段执行
+validate_runtime 开关
+```
+
+先接 QA Test 所需规则。
+
+## 23.10 阶段九：QA Test 垂直切片
+
+完整链路：
+
+```text
+新 QA Test YAML
+→ load_config(expected_mode=test)
+→ 加载训练配置 expected_mode=train
+→ 新 QA Test Builder
+→ 构造组件但不运行完整测试
+```
+
+这是第一次改 Builder 的阶段。
+
+完成标准：
+
+```text
+旧 MLM 字段不再要求
+EM/F1 params=None 正确变成 {}
+Checkpoint 与训练配置可加载
+Builder 不访问旧扁平路径
+```
+
+## 23.11 阶段十：QA Train
+
+注册并实现 QA Train 所需全部 Specs。迁移：
+
+```text
+start_train
+QA Builder
+实验配置快照
+resume/init_from 互斥
+```
+
+先做 Parser 和 Builder 构造，再做最小 Forward。
+
+## 23.12 阶段十一：MLM Test/Train
+
+新增 MLM Specs，不修改 Parser 引擎。若发现必须改引擎，暂停并讨论协议缺口。
+
+## 23.13 阶段十二：MLM Inference
+
+新增 Decoding ComponentSpec 和 Inference Builder。
+
+## 23.14 阶段十三：入口切换
+
+逐个切换：
+
+```text
+start_test
+start_train
+start_inference
+```
+
+每切一个都保留可回退的旧入口引用，确认后再继续。
+
+## 23.15 阶段十四：清理旧系统
+
+仅在所有正式链路通过后删除：
+
+```text
+parse.copy
+旧 CUSTOM_DICT
+旧重复 Validator
+旧模式化任务 Registry 键
+旧 YAML
 ```
 
 ---
 
-# 十八、YAML 与 Builder 的兼容约束
+## 24. 每阶段验证层级
 
-Parser 重构不能改变 Builder 预期的字典访问方式，除非同步修改并验证 Builder。
-
-当前必须保持：
+必须依次区分：
 
 ```text
-config_dict["model"]
-config_dict["tokenizer"]
-config_dict["dataset"]
-config_dict["dataloader"]
-config_dict["losses"]
-config_dict["metrics"]
+Schema 单元测试
+Registry 单元测试
+Bootstrap 测试
+Normalize 测试
+Path 测试
+Validator 测试
+Parser 组合测试
+Builder 构造测试
+单 Batch 测试
+完整运行测试
 ```
 
-QA Test Builder 当前还依赖：
+前一级未通过，不进入后一级。
+
+不能用“YAML 可以加载”代表 Parser 完成，也不能用“Builder 可以构造”代表训练通过。
+
+---
+
+## 25. 关键测试矩阵
+
+### Schema
 
 ```text
-config_dict["checkpoint"]["config_path"]
-config_dict["dataset"]["test_path"]
-config_dict["dataloader"]
-config_dict["losses"]
-config_dict["metrics"]["test"]
+MISSING / None / 默认值
+未知字段
+错误类型
+Sequence 空列表
+Schema 冲突
+默认 dict 深拷贝
 ```
 
-Parser 可以增加内部元数据，但不应让 Builder 因配置层级改变而被迫重写。
-
-## 18.1 配置字段消费者登记
-
-重构前建议为每个字段登记真实消费者：
+### Registry
 
 ```text
-字段
-→ 哪个 Parser Schema 允许
-→ 哪个 Builder 读取
-→ 哪个组件使用
-→ 是否有默认值
-→ 是否需要路径解析
-→ 是否需要语义校验
+重复 key
+别名冲突
+未知 key
+规范键输出
 ```
+
+### Bootstrap
+
+```text
+错误 mode
+错误 task
+mode/task 不匹配
+列表组件扫描
+不支持组合
+```
+
+### Params
+
+```text
+None → defaults
+{} → defaults
+部分参数 → defaults + override
+未知参数 → error
+无参数组件 → {}
+```
+
+### Paths
+
+```text
+config_dir
+字段基准
+推导路径
+绝对路径
+循环依赖
+不存在文件
+```
+
+### Mode
+
+```text
+Train 禁止 checkpoint
+Test 禁止 optimization
+Inference 禁止 data/evaluation
+```
+
+### Task capability
+
+```text
+QA Tokenizer 缺少 offset_mapping
+MLM Collator 缺少 dynamic_mlm
+GPT 模拟组件可在不改 Parser 的情况下注册
+```
+
+---
+
+## 26. 实现时的决策原则
+
+每增加一项规则先回答：
+
+```text
+它是 Parser 引擎规则，还是扩展规则？
+它属于 Schema、Normalizer、Path Resolver 还是 Validator？
+它由 Mode、Task 还是 Component 拥有？
+新增另一个任务时是否需要修改引擎？
+它的消费者是谁？
+它的错误路径是什么？
+它是否修改配置？
+它在流水线哪个阶段执行？
+```
+
+如果规则中出现具体任务或组件名称，优先放入对应 Spec，而不是核心流程。
+
+---
+
+## 27. 最终验收标准
+
+### 引擎通用性
+
+```text
+Parser 核心不知道 MLM、QA、GPT
+新增任务不修改通用流水线
+新增组件不修改普通递归器
+路径解析不按字段名硬编码
+Validator 总调度器不含任务分支
+```
+
+### 配置正确性
+
+```text
+mode/task 明确分离
+所有 Registry key 已规范化
+所有 params 最终为 dict
+所有路径最终为绝对 Path
+原始配置不被修改
+最终配置可以生成可复现快照
+```
+
+### 架构完整性
+
+```text
+Schema 冲突可诊断
+Spec 注册错误可诊断
+路径依赖可诊断
+所有错误包含 ConfigPath
+Test/Inference 训练配置来源明确
+Builder 使用新配置契约
+```
+
+### 扩展性证明
+
+在不修改 Parser 引擎的情况下，注册一个最小模拟任务和模拟组件并成功完成：
+
+```text
+Bootstrap
+→ Schema Compose
+→ Normalize
+→ Path
+→ Validate
+```
+
+未来 GPT 接入时也应遵守同一证明标准。
+
+---
+
+# 三十、逐文件实现手册
+
+本章将前面的架构转换为可以直接执行的实现计划。后续实际编写时，优先按照本章顺序创建文件和接口，不要先修改入口或 Builder。本文只规定实现方式，不提供完整代码。
+
+## 30.1 依赖边界
+
+### Python 标准库
+
+Parser 核心只使用标准库即可完成：
+
+```text
+abc                 → 抽象接口和协议基类
+copy                → deepcopy 默认值和配置副本
+ dataclasses        → 不可变或结构化上下文对象
+ enum               → 节点类型、校验阶段等有限枚举
+ pathlib            → 路径对象和路径解析
+ re                  → 必要的路径/设备格式检查
+ math                → 有限数值检查
+ collections.abc     → Mapping、Sequence 等容器判断
+ typing              → 类型标注
+ heapq               → 可选的稳定优先队列
+ graphlib            → Python 3.9+ 的 TopologicalSorter
+ hashlib             → Schema/config fingerprint
+ argparse            → CLI 参数
+ json                → 快照辅助序列化
+```
+
+实际项目中不需要为了 Parser 引入新的第三方 Schema 框架。自行实现节点协议更适合本项目教学目标，也能让错误路径和各阶段行为完全透明。
+
+### 现有第三方库
+
+```text
+PyYAML              → yaml.safe_load 读取 YAML
+torch               → Runtime Validator 检查 CUDA；不用于 Schema 核心
+```
+
+`yaml.safe_load()` 只能负责 YAML 到 Python 对象的转换。它不能替代项目的 Schema 校验，也不能判断任务、组件和路径语义。
+
+### 禁止的依赖方向
+
+```text
+schema 节点不能导入 Builder
+Parser 不能导入具体 MLM/QA Task
+通用 normalize 不能导入 torch 模型
+路径解析不能导入 Dataset/Checkpoint Builder
+Validator 不能创建 Optimizer 或 Model
+```
+
+这样才能保证未来增加 GPT 时不会把 GPT 代码反向耦合进 Parser 引擎。
+
+## 30.2 文件创建顺序
+
+第一轮实际创建顺序固定为：
+
+```text
+1. main/parse/errors.py
+2. main/parse/context.py
+3. main/parse/schema/nodes.py
+4. main/parse/schema/merge.py
+5. main/parse/schema/normalize.py
+6. main/parse/specs/component.py
+7. main/parse/specs/mode.py
+8. main/parse/specs/task.py
+9. main/parse/registries/base.py
+10. main/parse/registries/components.py
+11. main/parse/registries/modes.py
+12. main/parse/registries/tasks.py
+13. main/parse/bootstrap.py
+14. main/parse/schema/compile.py
+15. main/parse/paths/graph.py
+16. main/parse/paths/resolver.py
+17. main/parse/validation/pipeline.py
+18. main/parse/api.py
+19. main/parse/builtins/root_schema.py
+20. main/parse/builtins/modes/
+21. main/parse/builtins/tasks/
+22. main/parse/builtins/components/
+```
+
+先创建基础协议，再创建内置扩展，最后创建入口适配。原因是依赖方向必须保持：
+
+```text
+基础协议
+→ 注册机制
+→ 内置 Spec
+→ 通用流水线
+→ 兼容入口
+→ Builder
+```
+
+## 30.3 阶段一：`errors.py`
+
+文件：
+
+```text
+main/parse/errors.py
+```
+
+当前磁盘中的 `errors.py` 为空，而且 `ConfigPath` 尚未实现。因此本阶段只建立异常继承关系，不提前依赖 `context.py`，也不实现结构化路径字段。
+
+### 本阶段究竟实现什么
+
+本文件需要实现一组类，不实现普通函数。第一版中所有类都可以只有类声明和 `pass`，不需要分别编写构造函数。
+
+继承关系：
+
+```text
+Exception
+└── ConfigError
+    ├── YamlLoadError
+    ├── BootstrapError
+    │   ├── UnknownRegistryKeyError
+    │   └── ModeTaskMismatchError
+    ├── SchemaError
+    │   ├── SchemaConflictError
+    │   ├── MissingFieldError
+    │   ├── UnknownFieldError
+    │   ├── TypeMismatchError
+    │   └── NullNotAllowedError
+    ├── ParameterNormalizationError
+    ├── PathResolutionError
+    │   └── PathDependencyError
+    ├── ConfigValidationError
+    └── RuntimeValidationError
+```
+
+这里的子类和 `ConfigPath` 完全不是同一种东西：
+
+```text
+ConfigPath
+→ 普通数据类
+→ 表示配置中的位置
+→ 以后放在 context.py
+
+ConfigError 及其子类
+→ Python 异常类
+→ 表示不同种类的失败
+→ 放在 errors.py
+```
+
+因此不能“像 ConfigPath 一样写”。`ConfigPath` 后面会有 `child()`、`index()` 等路径方法；异常子类第一版不需要任何方法。
+
+### `ConfigError`
+
+第一版职责：作为所有 Parser 异常的统一父类，使调用方可以一次捕获所有配置错误。
+
+第一版不需要自定义 `__init__()`。因为它继承 `Exception` 后，天然可以接收任意异常消息参数：
+
+```text
+ConfigError("配置错误")
+MissingFieldError("缺少 task.type")
+```
+
+Python 的 `Exception` 会保存传入参数，因此：
+
+```text
+str(error)
+→ 得到错误消息
+
+error.args
+→ 得到构造时传入的参数元组
+```
+
+如果开发者希望显式写构造函数，第一版也只应接收 `message` 并调用父类；但这不是必需步骤。推荐先不重写构造函数，减少无意义代码。
+
+### 每个子类怎么写
+
+每个子类第一版只负责提供一个明确的异常类型，不保存额外字段，也不实现额外方法。
+
+概念结构：
+
+```text
+YamlLoadError(ConfigError)
+→ YAML 文件读取或解析失败
+
+BootstrapError(ConfigError)
+→ Bootstrap 阶段失败
+
+UnknownRegistryKeyError(BootstrapError)
+→ mode、task 或 component type 未注册
+
+ModeTaskMismatchError(BootstrapError)
+→ Task 不支持当前 Mode
+
+SchemaError(ConfigError)
+→ Schema 构造或结构规范化错误
+
+SchemaConflictError(SchemaError)
+→ 两份 Schema 对同一路径声明冲突
+
+MissingFieldError(SchemaError)
+→ 缺少必填字段
+
+UnknownFieldError(SchemaError)
+→ 出现 Schema 未允许的字段
+
+TypeMismatchError(SchemaError)
+→ Python 类型不符合 Schema
+
+NullNotAllowedError(SchemaError)
+→ 用户显式写 null，但该节点不允许 None
+
+ParameterNormalizationError(ConfigError)
+→ 多态 params 合并或规范化失败
+
+PathResolutionError(ConfigError)
+→ 路径基准、转换或推导失败
+
+PathDependencyError(PathResolutionError)
+→ 路径依赖图存在缺失依赖或环
+
+ConfigValidationError(ConfigError)
+→ 结构正确，但业务值或跨字段关系非法
+
+RuntimeValidationError(ConfigError)
+→ 配置本身正确，但当前 CUDA 等运行环境不满足
+```
+
+### 为什么需要这么多空子类
+
+它们不是为了分别保存不同数据，而是让调用方能通过异常类型判断失败阶段。
 
 例如：
 
 ```text
-mlm_prob
-→ MLM Train/Test Schema
-→ MLM Test/Train Builder
-→ MLMCollator
-→ 默认 0.15
-→ 否
-→ 校验范围 (0,1)
+except YamlLoadError
+→ 提示用户检查 YAML 文件
+
+except SchemaError
+→ 提示配置结构不符合 Schema
+
+except RuntimeValidationError
+→ 提示切换设备或检查环境
+
+except ConfigError
+→ 捕获所有 Parser 异常
 ```
+
+如果全部使用 `ValueError`，上层只能解析错误字符串，无法稳定区分错误来源。
+
+### 本阶段的使用方式
+
+发现错误的位置直接抛出对应子类：
 
 ```text
-max_seq_length
-→ 当前 MLM Schema
-→ MLM Dataset/Builder
-→ MLM Dataset
-→ 默认 128
-→ 否
-→ 校验正整数
+缺少字段
+→ raise MissingFieldError("缺少必填字段：config.task.type")
+
+未知组件
+→ raise UnknownRegistryKeyError("未注册的模型类型：unknown_model")
+
+路径依赖环
+→ raise PathDependencyError("路径依赖存在环：A → B → A")
 ```
+
+构造异常对象后不返回它，也不在底层打印它，而是使用 `raise` 向上传递。
+
+### 第一版完成标准
 
 ```text
-answers_list
-→ 不属于 YAML
-→ QA Dataset/Collator 运行时生成
-→ QA Metrics Process 使用
-→ 不参与 Parser
+errors.py 不导入 ConfigPath
+errors.py 不导入 typing、dataclasses 或第三方库
+ConfigError 直接继承 Exception
+所有子类继承关系与上面的树一致
+所有子类第一版可以只写 pass
+每个子类都可以接收字符串消息并正常 raise
+except ConfigError 可以捕获任意 Parser 子异常
+except SchemaError 可以捕获所有 Schema 子异常
 ```
 
-## 18.2 不把运行时字段写进 YAML
+### 后续何时扩展
 
-以下字段是运行时 Batch 或 Outputs 字段，不属于 YAML：
+只有完成 `context.py` 中的 `ConfigPath`，并且 Schema/Bootstrap 已经开始实际抛错后，再回到 `errors.py` 扩展结构化字段：
 
 ```text
-predictions
-references
-answers_list
-start_logits
-end_logits
-offset_mapping_list
+path
+actual_value
+expected
+source
 ```
 
-YAML 只配置：
+届时只需要扩展父类 `ConfigError.__init__()`，大多数子类仍然不需要自定义构造函数，因为它们会自动继承父类构造函数。
+
+所以当前实现结论是：
 
 ```text
-如何构造任务和指标
+ConfigError
+→ 继承 Exception
+→ 第一版可以 pass
+
+所有列出的子类
+→ 按继承树继承 ConfigError 或中间父类
+→ 第一版都可以 pass
+
+ConfigPath
+→ 暂时不实现、不导入、不参与 errors.py
 ```
 
-不配置：
+为什么先做：后续所有模块可以立即使用明确异常类型；等 `ConfigPath` 实现后，只扩展父类即可，不需要重写全部子类。
+
+## 30.4 阶段二：`context.py`
+
+### 本阶段文件
 
 ```text
-某个具体 Batch 中运行时才产生的中间结果
+main/parse/context.py
 ```
 
----
-
-# 十九、Parser 重构的验证矩阵
-
-每一个模式和任务组合都需要分别验证。
-
-## 19.1 解析层验证
+### 本阶段依赖
 
 ```text
-MLM Train YAML → train/mlm_pretrain
-QA Train YAML → train/qa_sft
-MLM Test YAML → test/mlm_pretrain
-QA Test YAML → test/qa_sft
+标准库：dataclasses、pathlib、typing
+项目内：暂时只导入 errors.py 中必要的异常；不要导入 Schema、Spec、Builder
+第三方库：无
 ```
 
-确认：
+### 本阶段实现结果
+
+本文件实现：
 
 ```text
-允许字段正确
-必需字段正确
-默认值只填入当前 Schema 字段
-路径字段正确绝对化
-params 不被错误递归
+1 个缺失值哨兵：MISSING
+3 个数据类：ConfigPath、ComponentSelection、ParseContext
 ```
 
-## 19.2 负例验证
+这些对象只保存和传递状态，不读取 YAML、不访问 Registry、不规范化配置、不构造组件。
+
+### `MISSING`：实现一个哨兵对象
+
+实现形式：普通私有类加一个模块级单例，不是异常，也不是 dataclass。
 
 ```text
-QA YAML 缺少 mlm_prob → 不因该字段报错
-QA YAML 写入不允许的 MLM 字段 → 按 Schema 决定是否报错
-QA Test 缺少 train_path → 可以通过结构层
-QA Test 缺少 checkpoint.path → 报错
-MLM 配置缺少 mlm_prob → 按 MLM Schema 报错或使用明确默认值
-Test 配置出现 optimizer → 按 Test Schema 报错
+class _MissingType
+模块级对象 MISSING = _MissingType()
 ```
 
-“QA 可以不填写”与“QA 可以随便填写”是两件事：
+建议方法：
 
 ```text
-不要求无关字段
-≠
-允许任意未知字段
+__repr__() → "MISSING"
 ```
 
-Schema 仍应阻止拼写错误和明显无关字段。
+不需要其他业务方法。
 
-## 19.3 Builder 验证
-
-解析成功后，逐一调用：
+为什么需要：
 
 ```text
-MLM Train Builder
-MLM Test Builder
-QA Train Builder
-QA Test Builder
+字段不存在 → MISSING
+用户写 null → None
+用户写值 → 具体值
 ```
 
-只确认组件能够构造，不立即执行完整训练或测试。
+函数返回时若要表达“没有默认值”，也使用 `MISSING`，不能使用 `None`。
 
-## 19.4 运行链路验证
-
-Builder 构造验证通过后，再分别进行：
+完成检查：
 
 ```text
-最小 Batch forward
-Metric update
-Metric compute
-Checkpoint load
+MISSING is MISSING
+repr(MISSING) == "MISSING"
+MISSING is not None
 ```
 
-最后才运行完整训练、验证、测试或推理。
+### `ConfigPath`：实现一个不可变数据类
 
----
+实现形式：`@dataclass(frozen=True)`。
 
-# 二十、当前推荐的最终 YAML 设计结论
+建议内部字段：
 
 ```text
-保留顶层组件式 YAML
-不立即增加 mode 字段
-不改成 task 深层嵌套
-用 mode + base_task 选择 Schema
-MLM/QA Dataset Schema 分开
-Train/Test Schema 分开
-Inference Schema 单独维护
-params 只做透明 dict
-Loss/Metric 语义由 Validator 负责
-路径解析根据 Schema 中真实存在的字段执行
-Builder 继续接收平面字典
+parts: tuple[str | int, ...]
 ```
 
-YAML 重构的本质是：
+不要只保存一个拼好的字符串，否则 `child()` 和 `index()` 后续容易重复解析字符串。
+
+需要实现的方法：
 
 ```text
-让配置只描述当前任务真正使用的组件
-让 Parser 只接受当前模式真正允许的字段
-让 Builder 继续读取稳定的组件路径
+ConfigPath.root(name: str) → ConfigPath
+child(name: str) → ConfigPath
+index(value: int) → ConfigPath
+parent() → ConfigPath | None
+__str__() → str
 ```
+
+每个方法做什么：
+
+```text
+root
+→ 创建根路径
+→ 输入 "config"
+→ 返回 parts=("config",)
+
+child
+→ 返回新对象
+→ 原对象不变
+→ 字符串字段使用点号
+
+index
+→ 返回新对象
+→ int 部分显示为 [n]
+
+parent
+→ 根节点返回 None
+→ 其他路径返回去掉最后一个 part 的新对象
+
+__str__
+→ parts=("config", "losses", 0, "params")
+→ 返回 config.losses[0].params
+```
+
+参数检查：
+
+```text
+root/child 名称必须是非空 str
+index 必须是非负严格 int
+```
+
+第一版参数错误可使用内置 `TypeError`/`ValueError`，也可使用 `ConfigError`；项目最终统一前不要让 ConfigPath 反向依赖 Schema。
+
+为什么需要：Schema、Bootstrap、路径解析和 Validator 都需要追加路径。不可变对象可以防止某个递归分支修改其他分支共享的路径。
+
+完成检查：
+
+```text
+原路径调用 child/index 后不变
+字段和索引格式正确
+可以作为 dict key
+相同 parts 的对象相等
+```
+
+### `ComponentSelection`：实现一个不可变数据类
+
+实现形式：`@dataclass(frozen=True)`。
+
+字段：
+
+```text
+category: str
+key: str
+path: ConfigPath
+spec: Any
+```
+
+当前为了避免 `context.py` 与 `specs/component.py` 循环导入，`spec` 第一版可以标注为 `Any`，后续使用 `TYPE_CHECKING` 做静态类型引用。
+
+它不需要自定义方法。Bootstrap 创建它，Compile、参数规范化和 Builder 查询它。
+
+为什么保存 `spec`：避免后续阶段再次使用 key 查询 Registry；Bootstrap 已经确认过的选择应成为稳定上下文。
+
+### `ParseContext`：实现一个不可变数据类
+
+实现形式：`@dataclass(frozen=True)`。
+
+字段和类型：
+
+```text
+config_path: pathlib.Path
+config_dir: pathlib.Path
+expected_mode: str | None
+mode_key: str
+task_key: str
+selections: Mapping[ConfigPath, ComponentSelection]
+validate_runtime: bool
+```
+
+构造者：
+
+```text
+bootstrap_config()
+```
+
+消费者：
+
+```text
+collect_specs()
+compile_schema()
+normalize_polymorphic_nodes()
+resolve_paths()
+validate_config()
+Builder/Runner
+```
+
+需要实现的方法：
+
+```text
+get_selection(path: ConfigPath) → ComponentSelection
+```
+
+这里的“存在”不是指 `ConfigPath` 对象自身具有某个 `exists()` 方法，也不是检查文件系统，更不是检查 YAML 节点是否存在。它指的是：
+
+```text
+传入的 ConfigPath 是否作为 key 存在于 ParseContext.selections 映射中
+```
+
+`ConfigPath` 只负责表示路径；`ParseContext.selections` 保存 Bootstrap 已识别出的“路径 → 组件选择”关系。
+
+方法行为：
+
+```text
+path in self.selections
+→ 返回 self.selections[path]
+
+path not in self.selections
+→ 抛 BootstrapError
+```
+
+推荐实现逻辑：
+
+```text
+get_selection(path):
+    try:
+        return self.selections[path]
+    except KeyError as error:
+        raise BootstrapError(
+            f"未找到组件选择：{path}"
+        ) from error
+```
+
+因此，调用者必须传入与 Bootstrap 保存时结构相同的 `ConfigPath`。例如：
+
+```text
+Bootstrap 保存：
+config.components.model → ComponentSelection(...)
+
+后续查询：
+context.get_selection(
+    ConfigPath.root("config").child("components").child("model")
+)
+→ 返回对应 ComponentSelection
+```
+
+之所以可以直接把 `ConfigPath` 用作 dict key，是因为它使用 `@dataclass(frozen=True)`，且内部 `parts` 是 tuple；具有相同 `parts` 的两个 `ConfigPath` 会相等并拥有一致的哈希值。
+
+这里不要写：
+
+```text
+path.exists()
+path.is_file()
+```
+
+这些方法属于文件系统路径检查，不属于 `ConfigPath`。文件存在性由 `PathSchema` 和 Validator 在后续阶段处理。
+
+推荐抛项目异常，错误消息包含 `str(path)`。
+
+ParseContext 不保存：
+
+```text
+raw_config
+normalized_config
+CompiledSchema
+运行时组件实例
+```
+
+### 本阶段返回物
+
+`context.py` 本身不运行流程。完成后，其他模块可以导入四个公共对象：
+
+```text
+MISSING
+ConfigPath
+ComponentSelection
+ParseContext
+```
+
+### 本阶段完成标准
+
+```text
+只使用标准库
+没有导入具体任务或组件
+ConfigPath 不可变
+ParseContext 不可变
+ComponentSelection 不执行 Registry 查询
+MISSING 与 None 明确区分
+所有基础行为有独立最小测试
+```
+
+## 30.5 阶段三：`schema/nodes.py`
+
+### 本阶段文件
+
+```text
+main/parse/schema/nodes.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：abc、copy、dataclasses、pathlib、typing、collections.abc
+项目内：context.MISSING、context.ConfigPath、errors 中的 Schema 子异常
+第三方库：无
+```
+
+### 本阶段实现结果
+
+实现 Schema 类，不实现任务或组件的具体字段。建议所有节点使用不可变 dataclass，让一个 Schema 可以安全地被多个 Spec 复用。
+
+### `SchemaNode`：抽象基类
+
+实现形式：定义一个继承 `abc.ABC` 的类，并使用 `abc.abstractmethod` 声明抽象实例方法。
+
+这里必须先明确 `normalize` 的含义：
+
+> `normalize` 接收“当前 YAML 节点的原始 Python 值”，按照当前 SchemaNode 描述的结构规则，返回一个新的、形态统一的 Python 值。
+
+它不是把任意错误值强行转换成正确值，也不是执行全部业务校验。它只完成结构层规范化：
+
+```text
+识别字段是否缺失
+处理普通默认值
+判断 None 是否允许
+检查基础 Python 类型
+递归处理 dict/list 子节点
+规范化有限字符串或 Registry key
+复制容器，避免修改原始 YAML 对象
+```
+
+它不负责：
+
+```text
+数字业务范围
+组件能力兼容
+文件是否存在
+跨字段关系
+构造 Model/Dataset/Optimizer
+具体多态 params 的默认值合并
+```
+
+#### 抽象方法签名
+
+```text
+normalize(
+    self,
+    value: Any,
+    path: ConfigPath,
+    context: ParseContext,
+) → Any
+```
+
+每个参数的含义：
+
+```text
+self
+→ 当前 SchemaNode 实例
+→ 保存该节点的 required、default、fields 等规则
+
+value
+→ 当前 YAML 节点对应的原始 Python 值
+→ 字段不存在时传入 MISSING
+
+path
+→ value 在 YAML 配置树中的逻辑位置
+→ 只用于递归生成子路径和报告错误
+
+context
+→ Bootstrap 已识别出的 mode、task 和组件选择
+→ 普通 Scalar/Mapping 可能暂时不用
+→ RegistryKey/Polymorphic 节点会使用
+```
+
+返回值：
+
+```text
+成功
+→ 返回规范化后的当前节点值
+
+可选字段缺失且没有默认值
+→ 返回 MISSING
+
+配置不符合当前节点结构规则
+→ 抛出 ConfigError 子类
+```
+
+#### 抽象基类自身做什么
+
+`SchemaNode` 自身不实现通用 `normalize` 逻辑，因为不同节点处理方式不同：
+
+```text
+ScalarSchema
+→ 处理单个值、缺失、None、默认值和基础类型
+
+MappingSchema
+→ 处理 dict、字段集合以及对子字段递归
+
+SequenceSchema
+→ 处理 list 以及对列表元素递归
+
+PathSchema
+→ 处理字符串/Path 的基础形态
+
+PolymorphicSchema
+→ 处理 type/params 公共外壳
+```
+
+因此抽象基类的第一版只定义接口，不需要构造函数，也不应调用 `super(ABC).__init__()`。
+
+概念实现结构：
+
+```text
+class SchemaNode(ABC):
+    @abstractmethod
+    def normalize(self, value, path, context):
+        raise NotImplementedError
+```
+
+注意这里是：
+
+```text
+class SchemaNode(ABC)
+```
+
+不是：
+
+```text
+def SchemaNode(ABC)
+```
+
+同时实例方法第一个参数必须是 `self`。
+
+`merge()` 放在 `schema/merge.py` 的通用函数中；`walk()` 放在 `schema/walk.py`。这样节点类只描述自身结构和自身规范化行为。
+
+#### 一次完整调用示例
+
+原始 YAML：
+
+```yaml
+experiment:
+  name: demo
+```
+
+Root Mapping 在处理 `experiment.seed` 时发现字段不存在，调用逻辑为：
+
+```text
+seed_schema.normalize(
+    value=MISSING,
+    path=config.experiment.seed,
+    context=parse_context,
+)
+```
+
+若 `seed_schema.default == 42`，返回：
+
+```text
+42
+```
+
+父 Mapping 把结果写入新字典，最终得到：
+
+```text
+{"experiment": {"name": "demo", "seed": 42}}
+```
+
+原始 YAML 对象仍然保持：
+
+```text
+{"experiment": {"name": "demo"}}
+```
+
+再例如原始 YAML：
+
+```yaml
+runtime:
+  device:
+    count: "one"
+```
+
+若 `count` 的 ScalarSchema 只允许 `int`，调用 `normalize()` 后不是把 `"one"` 转成整数，而是抛出 `TypeMismatchError`。这说明规范化只处理明确、安全的规则，不猜测用户意图。
+
+#### 所有节点必须遵守的不变量
+
+```text
+不修改传入 value
+容器成功时返回新 dict/list
+默认可变值使用 deepcopy
+错误路径使用传入的 ConfigPath
+不捕获并吞掉 ConfigError
+不执行当前节点职责之外的业务逻辑
+```
+
+### `ScalarSchema`：普通叶子节点类
+
+构造字段：
+
+```text
+python_types: tuple[type, ...]
+required: bool = false
+allow_none: bool = false
+default: Any = MISSING
+normalizer: Callable | None = None
+```
+
+构造时检查：
+
+```text
+python_types 非空
+required=True 与 default!=MISSING 不同时使用
+normalizer 为 None 或可调用对象
+```
+
+`normalize()` 顺序：
+
+```text
+1. value is MISSING
+2. 若 default 非 MISSING，返回 deepcopy(default)
+3. 否则若 required，抛 MissingFieldError
+4. 否则返回 MISSING，交给父 Mapping 决定不写入结果
+5. value is None 时检查 allow_none
+6. 检查实际 Python 类型
+7. 有 normalizer 时调用
+8. 返回结果
+```
+
+严格整数要注意 `bool` 是 `int` 子类。需要严格整数时，不应只使用 `isinstance(value, int)`；可以在 normalizer/Validator 中使用 `type(value) is int`。
+
+### `MappingSchema`：固定字典节点类
+
+构造字段：
+
+```text
+fields: Mapping[str, SchemaNode]
+allow_unknown: bool = false
+```
+
+`normalize()` 顺序：
+
+```text
+1. 检查 value 是 dict/Mapping
+2. 计算 value.keys - fields.keys
+3. allow_unknown=false 时抛 UnknownFieldError
+4. 创建空结果 dict
+5. 按 fields 的稳定顺序读取 value.get(name, MISSING)
+6. 调用子 Schema.normalize
+7. 子结果不是 MISSING 时写入结果
+8. allow_unknown=true 时 deepcopy 未知字段到结果
+9. 返回新 dict
+```
+
+为什么返回新 dict：默认值、路径和 params 后续还会继续规范化，不能污染原始 YAML 对象。
+
+### `SequenceSchema`：列表节点类
+
+构造字段：
+
+```text
+item_schema: SchemaNode
+min_items: int = 0
+max_items: int | None = None
+allow_none: bool = false
+```
+
+`normalize()` 顺序：
+
+```text
+检查 None
+→ 检查 value 是 list
+→ 检查长度
+→ enumerate(value)
+→ item_schema.normalize(item, path.index(i), context)
+→ 返回新 list
+```
+
+YAML 中 tuple 不作为合法输入，避免 Parser 接受 YAML 无法自然表达的结构。
+
+### `EnumSchema`：有限字符串节点类
+
+构造字段：
+
+```text
+choices: Mapping[str, str] 或 set[str]
+case_sensitive: bool = false
+required/allow_none/default
+```
+
+返回 canonical value。例如输入 `TRAIN`，返回 `train`。
+
+它适合 `scheduler.interval`；`run.mode` 在 Bootstrap 中使用 Registry 解析，不应重复维护两份允许值。
+
+### `RegistryKeySchema`：Registry 键节点类
+
+构造字段：
+
+```text
+registry
+required: bool = true
+allow_none: bool = false
+```
+
+`normalize()`：
+
+```text
+检查非空 str
+→ registry.resolve_key(value)
+→ 返回 canonical key
+```
+
+调用 Registry 失败时保留原异常类型 `UnknownRegistryKeyError`。
+
+### `PolymorphicSchema`：多态组件外壳类
+
+构造字段：
+
+```text
+category: str
+discriminator: str = "type"
+params_field: str = "params"
+common_schema: MappingSchema
+```
+
+它的 `normalize()` 只处理：
+
+```text
+公共字段
+规范化 type
+params 字段必须存在
+params 允许 None 或 dict
+```
+
+它不读取具体 `params_schema`。具体参数由 `normalize_polymorphic_nodes()` 处理。
+
+返回值仍是 dict，例如：
+
+```text
+{"type": "adamw", "params": None}
+```
+
+### `PathSchema`：路径描述节点类
+
+可以继承 `ScalarSchema`，或组合一个 ScalarSchema。建议继承/封装后仍保证输入只允许 `str | pathlib.Path | None`。
+
+构造字段：
+
+```text
+kind: "file" | "directory"
+base: PathBase
+allow_none
+allowed_suffixes: tuple[str, ...]
+must_exist: bool
+non_empty: bool
+resolver_name: str | None
+```
+
+本阶段 `normalize()` 只做类型检查和 `Path(value)` 转换；不拼接基准、不访问磁盘。
+
+### 本阶段不实现
+
+```text
+Schema 合并
+Schema 遍历收集
+具体 QA/MLM Schema
+文件存在性
+业务数值范围
+params 默认值合并
+```
+
+### 本阶段完成标准
+
+```text
+每个节点都有明确构造参数
+normalize 不修改输入
+默认可变值使用 deepcopy
+列表错误路径带索引
+Mapping 拒绝未知字段
+PathSchema 不访问磁盘
+所有节点可用小型人工 Schema 独立测试
+```
+
+## 30.6 阶段四：Schema 遍历、合并与编译
+
+### 本阶段文件
+
+```text
+main/parse/schema/walk.py
+main/parse/schema/merge.py
+main/parse/schema/compile.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：copy、dataclasses、typing
+项目内：schema.nodes、context.ConfigPath、errors.SchemaConflictError
+第三方库：无
+```
+
+### `walk.py`：实现纯函数遍历器
+
+数据类 `SchemaEntry`：
+
+```text
+path: ConfigPath
+node: SchemaNode
+```
+
+函数：
+
+```text
+walk_schema(root, root_path=ConfigPath.root("config"))
+→ Iterator[SchemaEntry]
+```
+
+流程：
+
+```text
+先 yield 当前节点
+→ Mapping 遍历 fields
+→ Sequence 遍历 item_schema，使用特殊 item 标记而不假装真实索引
+→ Polymorphic 遍历 common_schema
+```
+
+该函数不规范化配置，只遍历 Schema 对象。
+
+### `merge.py`：实现 Schema 合并纯函数
+
+主接口：
+
+```text
+merge_schema(left, right, path, left_source, right_source) → SchemaNode
+```
+
+实现方式：使用节点类型分派的普通函数，不需要创建 `SchemaMerger` 大类。
+
+流程：
+
+```text
+1. 节点具体类型不同 → SchemaConflictError
+2. Mapping → 合并同名字段，独有字段直接保留
+3. Sequence → 递归合并 item_schema，检查 min/max
+4. Scalar → 检查类型、required、allow_none、default、normalizer
+5. Path → 额外检查 kind/base/suffix/resolver
+6. Polymorphic → 检查 category/discriminator/params_field，再合并 common_schema
+7. 返回新的 SchemaNode
+```
+
+禁止修改 left/right。
+
+默认值比较注意：若是复杂可变对象，不要求支持任意对象深度比较；第一版只允许可稳定比较的 YAML 值作为默认值。
+
+### `compile.py`：实现编译结果和编译函数
+
+数据类 `SpecBundle`：
+
+```text
+root_schema
+mode_spec
+task_spec
+component_specs
+```
+
+数据类 `CompiledSchema`：
+
+```text
+root: SchemaNode
+polymorphic_nodes: tuple[SchemaEntry, ...]
+path_nodes: tuple[SchemaEntry, ...]
+validator_refs: tuple[Any, ...]
+schema_sources: Mapping[ConfigPath, tuple[str, ...]]
+```
+
+主函数：
+
+```text
+compile_schema(bundle: SpecBundle) → CompiledSchema
+```
+
+流程：
+
+```text
+1. deepcopy root_schema
+2. 合并 mode_spec.schema_contribution
+3. 合并 task_spec.schema_contribution
+4. 按 ComponentSelection 稳定顺序合并组件 contribution
+5. walk_schema 最终 root
+6. 收集 PolymorphicSchema
+7. 收集 PathSchema
+8. 收集 Validator 引用
+9. 生成 schema_sources
+10. 返回 CompiledSchema
+```
+
+为什么返回 dataclass：后续 Normalize、Path 和 Validator 都需要相同的已编译元数据，不应各自重新遍历和组合。
+
+### 本阶段完成标准
+
+```text
+合并不修改输入节点
+冲突错误包含配置路径和两个 source
+CompiledSchema 元数据使用不可变 tuple
+人工 Root+Mode+Task Schema 可成功合并
+节点类型、默认值、Path 基准冲突均能报错
+```
+
+## 30.7 阶段五：`specs/` 与 `registries/`
+
+### 本阶段文件
+
+```text
+main/parse/specs/component.py
+main/parse/specs/mode.py
+main/parse/specs/task.py
+main/parse/specs/validator.py
+main/parse/registries/base.py
+main/parse/registries/components.py
+main/parse/registries/modes.py
+main/parse/registries/tasks.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：dataclasses、typing、collections.abc
+项目内：SchemaNode、ConfigPath、ConfigError 子类
+第三方库：无
+```
+
+### `ValidatorSpec`：数据类
+
+文件：`specs/validator.py`。
+
+字段：
+
+```text
+name: str
+phase: str
+priority: int
+validator: Callable
+applies_to: Callable | None
+source: str
+```
+
+方法：
+
+```text
+should_run(context, config) → bool
+run(context, config) → None
+```
+
+`run()` 只调用 validator；不要捕获并吞掉 ConfigError。
+
+### `ComponentSpec`：不可变数据类
+
+文件：`specs/component.py`。
+
+字段：
+
+```text
+category: str
+key: str
+aliases: tuple[str, ...]
+params_schema: MappingSchema
+default_params: Mapping[str, Any]
+capabilities: frozenset[str]
+normalizers: tuple[Callable, ...]
+validators: tuple[ValidatorSpec, ...]
+factory: Callable | None
+schema_contribution: SchemaNode | None
+```
+
+方法及返回：
+
+```text
+validate_definition() → None
+normalize_params(raw_params, path, context) → dict
+validate_params(params, path, context) → None
+build(params, build_context) → Any
+```
+
+具体行为：
+
+```text
+validate_definition
+→ key/category 非空
+→ aliases 规范化后不重复
+→ default_params 能通过 params_schema
+→ factory 为 None 或 callable
+
+normalize_params
+→ deepcopy(default_params)
+→ raw_params=None 时不覆盖
+→ raw_params=dict 时覆盖
+→ params_schema.normalize
+→ 依次运行 normalizers
+→ 返回 dict
+
+validate_params
+→ 依次执行本组件 Validator
+
+build
+→ factory 为空时报错
+→ 否则返回 factory(params=params, context=build_context) 的结果
+```
+
+Parser 只调用前 3 个接口；Builder 才调用 `build()`。
+
+### `TaskSpec`：不可变数据类
+
+文件：`specs/task.py`。
+
+字段：
+
+```text
+key
+aliases
+supported_modes: frozenset[str]
+task_params_schema
+schema_contribution
+bootstrap_descriptors
+required_capabilities_by_mode
+normalizers
+validators
+cross_validators
+builders_by_mode: Mapping[str, Callable]
+```
+
+方法：
+
+```text
+validate_definition() → None
+supports_mode(mode_key) → bool
+get_builder(mode_key) → Callable
+```
+
+`validate_definition()` 必须检查：
+
+```text
+supported_modes 与 builders_by_mode.keys 一致
+每个 mode 的能力要求结构合法
+每个 Builder 可调用
+```
+
+`get_builder()` 不拼接字符串，直接按 mode_key 查映射；不支持时抛 `ModeTaskMismatchError`。
+
+### `ModeSpec`：不可变数据类
+
+文件：`specs/mode.py`。
+
+字段：
+
+```text
+key
+aliases
+schema_contribution
+bootstrap_descriptors
+required_sections
+forbidden_sections
+normalizers
+validators
+runner
+```
+
+方法：
+
+```text
+validate_definition() → None
+get_runner() → Callable
+```
+
+`runner` 与 Task Builder 不同：Runner 负责 Train/Test/Inference 的运行过程；Task Builder 负责构造该任务所需组件。
+
+### `BaseRegistry`：有状态普通类
+
+文件：`registries/base.py`。
+
+内部字段：
+
+```text
+_name
+_spec_type
+_specs: dict[str, Spec]
+_aliases: dict[str, str]
+```
+
+方法：
+
+```text
+normalize_key(raw_key) → str
+register(spec) → None
+resolve_key(raw_key) → str
+get(key) → Spec
+contains(key) → bool
+all_keys() → tuple[str, ...]
+```
+
+`register()` 顺序：
+
+```text
+检查 spec 类型
+→ spec.validate_definition()
+→ 规范化 canonical key
+→ 检查 key 重复
+→ 逐个规范化 alias
+→ 检查 alias 与 key/alias 冲突
+→ 写入 _specs/_aliases
+→ 返回 None
+```
+
+`resolve_key()` 返回 canonical key；`get()` 可以先调用 `resolve_key()`，因此别名和规范键都可查询。
+
+### 分类 Registry
+
+```text
+ComponentRegistry
+→ 需要 category
+→ 每个 category 独立 BaseRegistry
+
+ModeRegistry
+→ BaseRegistry[ModeSpec]
+
+TaskRegistry
+→ BaseRegistry[TaskSpec]
+```
+
+推荐提供模块级 Registry 实例，但不要在导入 `base.py` 时自动导入全部内置任务，避免循环导入。统一注册动作放在 `builtins/register.py`。
+
+### 本阶段完成标准
+
+```text
+Spec 都是描述对象，不创建运行组件
+Registry 返回 canonical key
+别名冲突可诊断
+TaskSpec 不拼接 mode/task
+ComponentSpec 默认 params 可自校验
+Registry 与具体 MLM/QA 类无耦合
+```
+
+## 30.8 阶段六：`bootstrap.py`
+
+### 本阶段文件
+
+```text
+main/parse/bootstrap.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：dataclasses、pathlib、typing、collections.abc
+项目内：context、registries、specs、errors
+第三方库：无
+```
+
+### `BootstrapDescriptor`：不可变数据类
+
+字段：
+
+```text
+path_pattern: tuple[str | "*", ...]
+category: str
+required: bool
+```
+
+示例：
+
+```text
+("components", "model") category="model"
+("components", "losses", "*") category="loss"
+("evaluation", "metrics", "*", "*") category="metric"
+```
+
+`*` 表示遍历 Mapping 值或 Sequence 元素。第一版只支持明确的两种通配场景，不实现通用 XPath。
+
+### 辅助函数
+
+```text
+read_required_mapping(raw, key, path) → Mapping
+read_required_string(raw, key, path) → str
+scan_descriptor(raw_config, descriptor, root_path) → list[(ConfigPath, Mapping)]
+```
+
+辅助函数只做 Bootstrap 所需的最小类型检查，并抛 BootstrapError 子类。
+
+### 主函数
+
+```text
+bootstrap_config(
+    raw_config: Mapping,
+    config_path: str | pathlib.Path,
+    mode_registry: ModeRegistry,
+    task_registry: TaskRegistry,
+    component_registry: ComponentRegistry,
+    expected_mode: str | None = None,
+    validate_runtime: bool = true,
+) → ParseContext
+```
+
+不建议从模块全局隐式取得 Registry；显式参数更容易测试。`api.py` 可以传入默认 Registry 集合。
+
+执行顺序：
+
+```text
+1. 将 config_path 转为绝对 Path，得到 config_dir
+2. 检查 raw_config 是 Mapping
+3. 读取 run Mapping
+4. 读取 run.mode 字符串
+5. mode_registry.resolve_key → mode_key
+6. expected_mode 非 None 时先规范化，再检查一致
+7. 读取 task Mapping 和 task.type
+8. task_registry.resolve_key → task_key
+9. task_spec.supports_mode(mode_key)
+10. 合并 ModeSpec 与 TaskSpec 的 BootstrapDescriptor
+11. 按 descriptor 扫描动态节点
+12. 读取每个节点的 type
+13. component_registry.resolve(category, type)
+14. 创建 ComponentSelection
+15. 检查同一路径没有重复选择
+16. 创建并返回 ParseContext
+```
+
+返回对象：只返回 `ParseContext`，不返回修改后的配置。
+
+不做：
+
+```text
+不补默认值
+不校验 params
+不解析 PathSchema
+不检查文件存在
+不检查能力兼容
+不调用 Builder
+```
+
+为什么需要单独阶段：完整 Schema 依赖 `type`，而 `type` 又在尚未规范化的 YAML 中。Bootstrap 只解决这个“先知道类型才能选择 Schema”的问题。
+
+### 本阶段完成标准
+
+```text
+输入 raw_config 不被修改
+mode/task 返回 canonical key
+expected_mode 不一致能报错
+动态列表路径包含真实索引
+未知组件错误包含 category、raw type 和路径
+返回 ParseContext.selections 完整且稳定
+```
+
+## 30.9 阶段七：`schema/normalize.py`
+
+### 本阶段文件
+
+```text
+main/parse/schema/normalize.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：copy、typing、collections.abc
+项目内：CompiledSchema、SchemaNode、ParseContext、ConfigPath、errors
+第三方库：无
+```
+
+### 路径读写辅助函数
+
+由于多态节点需要按 ConfigPath 读取和替换嵌套值，本文件先实现：
+
+```text
+get_value(config, path) → Any
+set_value_copy(config, path, value) → dict
+```
+
+`set_value_copy()` 返回新根 dict。第一版可以 `deepcopy(config)` 后定位写入，先保证正确性；性能有证据后再改结构共享。
+
+### `normalize_structure()`
+
+签名：
+
+```text
+normalize_structure(
+    raw_config: Mapping,
+    compiled_schema: CompiledSchema,
+    context: ParseContext,
+) → dict
+```
+
+实现方式：直接调用：
+
+```text
+compiled_schema.root.normalize(raw_config, ConfigPath.root("config"), context)
+```
+
+返回值必须是 dict。若根 Schema 返回其他类型，应抛 SchemaError，表示 Root Schema 定义错误。
+
+本函数不需要先 deepcopy 整棵树，因为每个 SchemaNode 已承诺返回新容器；额外全量 deepcopy 只会重复复制。
+
+### `normalize_polymorphic_nodes()`
+
+签名：
+
+```text
+normalize_polymorphic_nodes(
+    config: Mapping,
+    compiled_schema: CompiledSchema,
+    context: ParseContext,
+) → dict
+```
+
+流程：
+
+```text
+1. 创建结果配置副本
+2. 按路径稳定排序 polymorphic_nodes
+3. get_value 取得节点 dict
+4. context.get_selection(node_path)
+5. 确认节点 type 等于 selection.key
+6. 读取 params
+7. selection.spec.normalize_params(params, params_path, context)
+8. 确认返回值是 dict
+9. 替换节点的 params
+10. 返回结果 dict
+```
+
+`ComponentSpec.normalize_params()` 内部负责 defaults、用户覆盖、params_schema 和 normalizers，本函数不要重复实现这些组件细节。
+
+结束不变量：
+
+```text
+每个 Polymorphic 节点的 type 是 canonical key
+每个 params 是 dict
+原始和结构规范化配置均不被修改
+```
+
+### 本阶段完成标准
+
+```text
+Root Schema 规范化可独立运行
+默认值只复制一次且不共享
+params=None/空 dict/部分 dict 行为正确
+Selection 与 type 不一致时报内部配置错误
+最终结果可以直接交给 Override/Path 阶段
+```
+
+## 30.10 阶段八：`overrides.py`
+
+### 本阶段文件
+
+```text
+main/parse/overrides.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：dataclasses、copy、typing
+项目内：ConfigPath、CompiledSchema、ParseContext、SchemaError
+第三方库：PyYAML（仅用于把 CLI 字符串安全解析成 Python 标量/列表/dict）
+```
+
+### `ConfigOverride`：不可变数据类
+
+字段：
+
+```text
+path: ConfigPath
+raw_value: Any
+source: str
+```
+
+### `parse_override()`
+
+签名：
+
+```text
+parse_override(raw_text: str, source: str = "cli") → ConfigOverride
+```
+
+约定输入格式：
+
+```text
+path.to.field=value
+```
+
+流程：
+
+```text
+只按第一个 = 分割
+→ 左侧解析为 ConfigPath
+→ 右侧使用 yaml.safe_load
+→ 创建 ConfigOverride
+```
+
+第一版路径只支持点号字段，不支持 CLI 覆盖列表索引；需要时再明确加入 `[n]` 解析。
+
+### `apply_overrides()`
+
+签名：
+
+```text
+apply_overrides(
+    config: Mapping,
+    overrides: Sequence[ConfigOverride],
+    compiled_schema: CompiledSchema,
+    context: ParseContext,
+) → dict
+```
+
+流程：
+
+```text
+1. 复制 config
+2. 对每个 override 查找对应 SchemaEntry
+3. 路径不存在 → UnknownFieldError
+4. 检查是否为禁止覆盖的 discriminator
+5. 使用目标 node.normalize(raw_value, path, context)
+6. 写入结果配置
+7. 返回新 dict
+```
+
+禁止覆盖：
+
+```text
+run.mode
+task.type
+所有 PolymorphicSchema.type
+```
+
+原因：这些字段会改变 Bootstrap 选择和 CompiledSchema。第一版直接拒绝比局部重跑 Bootstrap 更可靠。
+
+`--resume` 不要求用户写通用文本 Override；入口可直接构造：
+
+```text
+ConfigOverride(ConfigPath(...run.resume_from), resume_path, "cli:--resume")
+```
+
+### 本阶段完成标准
+
+```text
+Override 不直接绕过 Schema
+输入 config 不变
+字符串 true/数字/list 可由 safe_load 转换
+判别字段不可覆盖
+错误包含 Override source
+```
+
+## 30.11 阶段九：路径模块
+
+### 本阶段文件
+
+```text
+main/parse/paths/graph.py
+main/parse/paths/resolver.py
+main/parse/paths/derivers.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：dataclasses、pathlib、graphlib、typing
+项目内：ConfigPath、CompiledSchema、PathSchema、PathResolutionError
+第三方库：无
+```
+
+### `PathNode`：不可变数据类
+
+建议放在 `paths/graph.py`：
+
+```text
+path: ConfigPath
+schema: PathSchema
+dependency: ConfigPath | None
+```
+
+### `collect_path_nodes()`
+
+签名：
+
+```text
+collect_path_nodes(compiled_schema: CompiledSchema) → tuple[PathNode, ...]
+```
+
+从 `compiled_schema.path_nodes` 转换为路径运行元数据，不重新 walk 整个 Schema。
+
+### `build_dependency_order()`
+
+签名：
+
+```text
+build_dependency_order(nodes: Sequence[PathNode]) → tuple[ConfigPath, ...]
+```
+
+流程：
+
+```text
+PathSchema.base=config_dir → 无依赖
+PathSchema.base=字段引用 → 依赖对应 ConfigPath
+→ 检查依赖节点存在
+→ graphlib.TopologicalSorter
+→ static_order()
+→ 返回稳定顺序
+```
+
+`TopologicalSorter` 抛出的循环异常转换为 `PathDependencyError`，并保留环中路径。
+
+### `derivers.py`
+
+实现命名明确的小函数，不实现一个万能推导器。例如：
+
+```text
+derive_train_config(checkpoint_path: pathlib.Path, config, context) → pathlib.Path
+```
+
+Deriver 必须是纯路径推导，不读取 YAML、不验证训练配置内容。
+
+### `resolve_paths()`
+
+签名：
+
+```text
+resolve_paths(
+    config: Mapping,
+    compiled_schema: CompiledSchema,
+    context: ParseContext,
+    deriver_registry: Mapping[str, Callable],
+) → dict
+```
+
+单节点顺序：
+
+```text
+1. 读取当前值
+2. None 且有 deriver → 调用 deriver
+3. None 且允许 → 保留
+4. 字符串转 Path
+5. 绝对路径 → resolve(strict=False)
+6. 相对路径 → 获取 config_dir 或已解析字段基准
+7. base / value 后 resolve(strict=False)
+8. 写回结果
+```
+
+这里不调用 `is_file()`/`is_dir()`，因为不存在路径仍然需要先得到最终绝对位置，之后 Validator 才能给出统一语义错误。
+
+### 本阶段完成标准
+
+```text
+使用 pathlib，不拼接路径字符串
+路径依赖按拓扑顺序解析
+循环和缺失依赖可诊断
+输入配置不变
+最终非 None 路径均为绝对 Path
+Deriver 不加载其他配置
+```
+
+## 30.12 阶段十：Validator Pipeline
+
+### 本阶段文件
+
+```text
+main/parse/validation/pipeline.py
+main/parse/validation/common.py
+main/parse/validation/runtime.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：math、pathlib、typing
+项目内：ValidatorSpec、CompiledSchema、ParseContext、ConfigValidationError
+第三方库：torch 只允许在 runtime.py 导入
+```
+
+### `common.py`
+
+实现可复用的小校验函数，不创建类：
+
+```text
+require_non_empty_string(value, path) → None
+require_strict_int(value, path, minimum=None, maximum=None) → None
+require_finite_number(value, path, minimum=None, maximum=None) → None
+require_file(path_value, path, suffixes=()) → None
+require_directory(path_value, path, non_empty=False) → None
+```
+
+这些函数成功返回 `None`，失败抛 `ConfigValidationError`。它们不读取任意配置树，只校验传入值。
+
+### `runtime.py`
+
+实现环境相关 Validator，例如：
+
+```text
+validate_device_runtime(context, config) → None
+```
+
+只有这里允许导入 `torch`。当 `context.validate_runtime=False` 时，对应 Validator 不运行。
+
+### `pipeline.py`
+
+函数：
+
+```text
+collect_validators(
+    compiled_schema: CompiledSchema,
+    context: ParseContext,
+) → tuple[ValidatorSpec, ...]
+```
+
+收集来源：
+
+```text
+CompiledSchema.validator_refs
+ComponentSelection.spec.validators
+ModeSpec.validators
+TaskSpec.validators/cross_validators
+```
+
+如果 ParseContext 当前没有保存 mode_spec/task_spec，可通过一个 `SpecBundle` 或在 context 中增加只读引用；不要在 Pipeline 中重新根据字符串导入具体模块。
+
+排序键：
+
+```text
+phase_order[phase], priority, name, source
+```
+
+主函数：
+
+```text
+validate_config(
+    config: Mapping,
+    context: ParseContext,
+    compiled_schema: CompiledSchema,
+) → None
+```
+
+流程：
+
+```text
+validators = collect_validators(...)
+→ 对每个 validator 调用 should_run
+→ true 时 run
+→ 全部完成后返回 None
+```
+
+不捕获 `ConfigError`。如果需要给未知异常增加 source，只能 `raise ... from original`，不能吞掉原始异常。
+
+### 本阶段完成标准
+
+```text
+Validator 不修改配置
+成功统一返回 None
+失败统一 raise
+torch 不出现在普通 Schema/Validator 模块
+执行顺序稳定
+validate_runtime 可以跳过环境检查
+```
+
+## 30.13 阶段十一：`pipeline.py` 与 `api.py`
+
+### 本阶段文件
+
+```text
+main/parse/pipeline.py
+main/parse/api.py
+main/parse/snapshot.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：dataclasses、pathlib、hashlib、json、typing
+第三方库：PyYAML
+项目内：前面所有通用模块、Registry 集合
+```
+
+### `pipeline.py`
+
+数据类 `ParserServices`：
+
+```text
+mode_registry
+task_registry
+component_registry
+deriver_registry
+root_schema
+```
+
+显式集中依赖，避免 `load_config()` 到处读取模块级全局变量。
+
+数据类 `ParsedConfig`：
+
+```text
+config: dict
+context: ParseContext
+compiled_schema: CompiledSchema
+schema_fingerprint: str
+```
+
+辅助函数：
+
+```text
+load_raw_yaml(path: pathlib.Path) → dict
+collect_specs(context, services) → SpecBundle
+fingerprint_schema(compiled_schema) → str
+```
+
+`load_raw_yaml()`：
+
+```text
+检查文件存在且是文件
+→ 以 UTF-8 读取
+→ yaml.safe_load
+→ 空文件报 YamlLoadError
+→ 顶层非 dict 报 YamlLoadError
+→ 返回 dict
+```
+
+主函数：
+
+```text
+run_parse_pipeline(
+    yaml_path,
+    services,
+    expected_mode=None,
+    overrides=(),
+    validate_runtime=True,
+) → ParsedConfig
+```
+
+固定执行顺序：
+
+```text
+绝对化 yaml_path
+→ load_raw_yaml
+→ bootstrap_config
+→ collect_specs
+→ compile_schema
+→ normalize_structure
+→ normalize_polymorphic_nodes
+→ apply_overrides
+→ resolve_paths
+→ validate_config
+→ fingerprint_schema
+→ ParsedConfig
+```
+
+任何阶段失败直接向上抛 `ConfigError`；Pipeline 不打印、不退出进程。
+
+### `api.py`
+
+公共函数：
+
+```text
+load_config(
+    yaml_path,
+    *,
+    expected_mode=None,
+    overrides=None,
+    validate_runtime=True,
+    services=None,
+) → ParsedConfig
+```
+
+行为：
+
+```text
+services is None
+→ 取得 builtins 创建的默认 ParserServices
+
+然后调用 run_parse_pipeline 并原样返回 ParsedConfig
+```
+
+`api.py` 是外部唯一推荐导入点。入口和 Builder 不直接导入内部 normalize/compile 函数。
+
+### `snapshot.py`
+
+函数：
+
+```text
+to_serializable_config(config) → dict
+save_config_snapshot(config, output_path) → pathlib.Path
+```
+
+转换规则：
+
+```text
+Path → str
+Mapping/list → 递归新容器
+普通 YAML 标量 → 原样
+其他对象 → TypeError
+```
+
+保存使用 `yaml.safe_dump`，明确 `allow_unicode=True` 和稳定字段顺序策略。
+
+### 本阶段完成标准
+
+```text
+公共入口只有 load_config
+Pipeline 顺序只有一处定义
+ParsedConfig 字段明确
+YAML 异常转换为 YamlLoadError
+快照不包含 Spec/Schema/Context 对象
+Override 判别字段仍被拒绝
+```
+
+## 30.14 阶段十二：内置扩展
+
+### 本阶段文件
+
+```text
+main/parse/builtins/root_schema.py
+main/parse/builtins/register.py
+main/parse/builtins/modes/train.py
+main/parse/builtins/modes/test.py
+main/parse/builtins/modes/inference.py
+main/parse/builtins/tasks/mlm.py
+main/parse/builtins/tasks/qa.py
+main/parse/builtins/components/*.py
+```
+
+### 本阶段依赖
+
+```text
+标准库：仅 dataclasses/typing/pathlib 等创建 Schema 所需模块
+项目内：SchemaNode、Spec、Validator、Registry
+第三方库：组件 Factory 可以导入 torch；纯 Spec 文件尽量不导入重量级运行模块
+```
+
+### 每个文件实现什么
+
+`root_schema.py`：
+
+```text
+build_root_schema() → MappingSchema
+```
+
+只声明：
+
+```text
+version
+experiment
+run.mode
+task.type/task.params
+```
+
+Mode 专属字段不放进 Root。
+
+`modes/train.py`：
+
+```text
+build_train_mode_spec() → ModeSpec
+```
+
+声明 Train 分区、BootstrapDescriptor、Mode Validator 和 Runner 引用。
+
+`tasks/qa.py`：
+
+```text
+build_qa_task_spec() → TaskSpec
+```
+
+声明 QA 参数、能力要求、Task Validator 和 builders_by_mode。
+
+每个 `components/*.py`：一个文件可登记一类紧密组件，例如：
+
+```text
+build_adamw_spec() → ComponentSpec
+build_step_lr_spec() → ComponentSpec
+```
+
+不要让一个 `components/all.py` 包含所有组件。
+
+### `register.py`
+
+函数：
+
+```text
+create_default_services() → ParserServices
+```
+
+流程：
+
+```text
+创建空 Registry
+→ 注册 ModeSpecs
+→ 注册 TaskSpecs
+→ 注册 ComponentSpecs
+→ 创建 deriver_registry
+→ build_root_schema
+→ 返回 ParserServices
+```
+
+注册顺序不影响语义，但应保持稳定以得到可复现的错误和 fingerprint。
+
+### 本阶段完成标准
+
+```text
+内置文件只声明扩展，不复制 Pipeline
+每个 Spec 都能独立 validate_definition
+create_default_services 可重复调用且不共享可变 Registry 状态
+QA/MLM 具体名称只出现在 builtins 和任务 Builder
+```
+
+## 30.15 阶段十三：入口、Runner 和 Builder 改造
+
+### 本阶段文件
+
+入口：
+
+```text
+main/start_train.py
+main/start_test.py
+main/start_inference.py
+```
+
+建议新增运行协议：
+
+```text
+main/runtime/context.py
+main/runtime/runners/train.py
+main/runtime/runners/test.py
+main/runtime/runners/inference.py
+main/runtime/build.py
+```
+
+若项目不希望新增 `runtime/`，可放到现有对应模块，但职责保持相同。
+
+### `BuildContext`：数据类
+
+字段：
+
+```text
+parsed_config
+services
+logger
+experiment_paths
+device_summary
+```
+
+它由 Runner 创建，Task Builder 消费。
+
+### `build_component()`
+
+文件建议：`main/runtime/build.py`。
+
+签名：
+
+```text
+build_component(category, node_config, build_context, dependencies=None) → Any
+```
+
+流程：
+
+```text
+读取 canonical type
+→ component_registry.get(category, type)
+→ 合并显式 dependencies 与 params
+→ 调用 spec.build
+→ 返回组件实例
+```
+
+不要让 ComponentSpec 从全局变量猜 Tokenizer、Optimizer 等依赖。
+
+### Runner
+
+ModeSpec.runner 指向对应函数：
+
+```text
+run_train(build_context, task_builder) → TrainSummary
+run_test(build_context, task_builder) → TestSummary
+run_inference(build_context, task_builder) → InferenceResult
+```
+
+Runner 负责模式流程；Task Builder 负责构造组件。二者不能合并成一个巨型 Builder。
+
+### 入口流程
+
+```text
+parse CLI
+→ 创建 ConfigOverride
+→ load_config(expected_mode=固定模式)
+→ 创建实验目录和日志
+→ 创建 BuildContext
+→ 从 TaskRegistry 取得 TaskSpec
+→ task_spec.get_builder(mode_key)
+→ mode_spec.get_runner()
+→ runner(build_context, builder)
+```
+
+入口不拼接 `task_mode` 字符串。
+
+### Builder 改造顺序
+
+```text
+1. 新建一个 QA Test Builder，不直接覆盖旧 Builder
+2. 参数改为 build_qa_test(context: BuildContext)
+3. 使用新嵌套 config 路径
+4. 将通用组件构造迁移到 build_component
+5. 保留任务依赖注入
+6. 返回 Runner 需要的明确结果数据类/字典
+7. QA Test 通过后迁移 QA Train
+8. 再迁移 MLM
+```
+
+### 本阶段完成标准
+
+```text
+入口只导入 parse.api，不导入内部 Schema 模块
+Runner 根据 mode 选择
+Builder 根据 task+mode 选择，但不拼字符串
+Builder 不再 strip/casefold type
+Builder 不再为 params 补默认值
+旧 Builder 在迁移期间仍可回退
+```
+
+## 30.16 第一条垂直切片的具体执行链
+
+### 目标和涉及文件
+
+目标：在不切换正式入口的前提下完成 QA Test 新链路。
+
+至少涉及：
+
+```text
+一个新 QA Test YAML
+builtins/modes/test.py
+builtins/tasks/qa.py
+builtins/components/ 下 QA 所需 Spec
+parse/api.py
+新的 QA Test Builder
+对应的 Parser/Builder 测试
+```
+
+### 实现顺序和每步输出
+
+```text
+1. 定义 QA Test YAML
+   输出：只含 run.checkpoint、测试 data、test metrics、runtime
+
+2. build_test_mode_spec()
+   输出：ModeSpec(key="test")
+
+3. build_qa_task_spec()
+   输出：支持 test 的 TaskSpec，包含 test Builder
+
+4. 创建组件 Specs
+   输出：Tokenizer/Model/Loss/Dataset/Collator/Metric 的 ComponentSpec
+
+5. create_default_services()
+   输出：包含上述 Spec 的 ParserServices
+
+6. load_config(test_yaml, expected_mode="test")
+   输出：test_parsed: ParsedConfig
+
+7. 读取 test_parsed.config["run"]["checkpoint"]["train_config"]
+   输出：绝对 Path
+
+8. load_config(train_config_path, expected_mode="train", validate_runtime=false)
+   输出：train_parsed: ParsedConfig
+
+9. 创建 QA Test BuildContext
+   输入：test_parsed、train_parsed、logger、device
+
+10. 调用 qa_task_spec.get_builder("test")
+    输出：QA Test 构造结果
+
+11. Builder 构造测试
+    检查：Tokenizer/Model/Dataset/Metric 可创建，尚不跑 Batch
+
+12. 单 Batch 测试
+    检查：数据字段、模型输出、Loss、Metric 接口匹配
+
+13. 独立 Test Runner
+    输出：TestSummary 和指标文件
+```
+
+### 双配置所有权
+
+```text
+测试配置
+→ Dataset 测试 Split
+→ DataLoader
+→ Metrics
+→ Runtime Device
+→ Checkpoint path
+
+训练配置
+→ Task 类型
+→ Tokenizer
+→ Model 结构参数
+→ Loss 结构
+
+Checkpoint
+→ Model 权重
+```
+
+若同一字段在两份配置中都出现，必须在 Schema/Validator 中明确禁止或明确优先级，不能由 Builder 临时决定。
+
+### 完成标准
+
+```text
+正式 start_test.py 尚可继续使用旧系统
+新 QA Test Parser 可独立调用
+两份 ParsedConfig 职责明确
+Builder 不访问旧扁平路径
+完成构造测试、单 Batch 测试和独立 Test
+```
+
+## 30.17 新 YAML 的分区到接口映射
+
+```text
+experiment
+→ Root Schema
+→ Experiment Validator
+
+run
+→ Root/Mode Schema
+→ Bootstrap、Checkpoint/Resume Validator
+
+task
+→ TaskSpec
+→ Task 参数规范化和 Task Validator
+
+components.tokenizer
+→ ComponentSpec(category="tokenizer")
+
+components.model
+→ ComponentSpec(category="model")
+
+components.losses
+→ SequenceSchema + ComponentSpec(category="loss")
+
+data.dataset
+→ ComponentSpec(category="dataset")
+
+data.collator
+→ ComponentSpec(category="collator")
+
+data.loaders.<split>
+→ Loader Schema + DataLoader Validator
+
+optimization.optimizer
+→ ComponentSpec(category="optimizer")
+
+optimization.scheduler
+→ ComponentSpec(category="scheduler")
+
+optimization.loop/validation
+→ Train Mode Schema 和 Validator
+
+evaluation.metrics.<split>
+→ SequenceSchema + ComponentSpec(category="metric")
+
+inference
+→ Inference Mode Schema 和 Decoding ComponentSpec
+
+runtime
+→ Runtime Schema 和 Runtime Validator
+```
+
+每个 YAML 字段必须能回答：
+
+```text
+由哪个 Schema 声明
+由哪个 Normalizer 处理
+由哪个 PathSchema 解析（如果是路径）
+由哪个 Validator 校验
+由哪个 Builder 消费
+```
+
+## 30.18 不应实现的形式
+
+不要实现：
+
+```text
+一个包含所有 YAML 字段的 Config 类
+一个包含所有任务 if/elif 的 Parser 类
+一个巨大的 validate_config 函数
+一个按字符串拼接 mode/task 的 Builder Registry
+一个字段名到路径规则的全局 if/elif 表
+一个直接修改 raw_config 的递归函数
+```
+
+理想架构不是“一个万能类”，而是：
+
+```text
+少量通用函数
++ 明确的 SchemaNode 类
++ Mode/Task/Component Spec
++ 独立 Registry
++ 注册式校验器
++ 一条固定 Pipeline
+```
+
+## 30.19 每个接口实现后的检查方式
+
+每完成一个接口，必须记录：
+
+```text
+输入类型
+输出类型
+是否修改输入
+可能抛出的异常
+使用的标准库/第三方库
+调用者
+被调用者
+最小测试样例
+```
+
+例如完成 `normalize_structure()` 后，应确认：
+
+```text
+输入 raw_config 不变
+输出是新 dict
+未知字段能定位
+params=None 仍合法
+默认 dict 不共享
+Path 尚未被强制解析
+```
+
+完成 `resolve_paths()` 后，应确认：
+
+```text
+输入 config 不变
+输出路径是绝对 pathlib.Path
+字段基准正确
+推导路径稳定
+循环依赖报 PathDependencyError
+```
+
+完成 `load_config()` 后，应确认：
+
+```text
+五类内置配置都能完成解析
+错误来自正确阶段
+返回 ParsedConfig
+最终 config 可被 Builder 消费
+```
+
+## 30.20 推荐的实际开发节奏
+
+每次只做一个最小闭环：
+
+```text
+阅读目标接口
+→ 明确输入/输出/副作用
+→ 实现一个类或一组紧密函数
+→ 写最小单元测试
+→ 运行测试
+→ 阅读磁盘结果
+→ 再进入下一接口
+```
+
+当前阶段不应一次性实现所有 Schema、所有 Task 和所有 Builder。正确顺序是：
+
+```text
+基础节点
+→ 小型人工 Schema
+→ Schema Merge
+→ Registry
+→ Bootstrap
+→ QA Test
+→ QA Train
+→ MLM
+→ Inference
+→ GPT 模拟扩展
+```
+
+这样如果某一阶段出现问题，可以确定问题属于：
+
+```text
+节点协议
+Schema 合并
+Spec 注册
+Bootstrap
+规范化
+路径
+校验
+Builder 适配
+```
+
+而不会因为一次修改几十个文件而无法定位。

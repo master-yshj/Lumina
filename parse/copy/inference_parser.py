@@ -70,10 +70,10 @@ def parse_args() -> Namespace:
     """
     用于解析命令行配置，并返回Namespace
     :param: None,
-    :return: Namespace(config="cfg/example.yaml",
+    :return: Namespace(config="cfg/example_qa.yaml",
                        resume="outputs/last.pt")
     """
-    parser = ArgumentParser(description = "使用命令行运行程序，命令行示例：python start_train.py --config cfg/example.yaml")
+    parser = ArgumentParser(description = "使用命令行运行程序，命令行示例：python start_train.py --config cfg/example_qa.yaml")
     # 配置config参数
     parser.add_argument("--config",help = "要运行哪一个任务，读取相应的配置",type=str,required=True)
     # 配置ckpt参数，以便继续训练，键名叫resume
