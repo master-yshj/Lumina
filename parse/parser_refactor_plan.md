@@ -512,12 +512,15 @@ normalize(self, value, path, context) → Any
 
 `self` 是当前规则，`value` 是当前 YAML 值，`path` 是当前逻辑位置，`context` 是 Bootstrap 上下文。
 
-统一返回规则：
+统一返回规则和异常类型：
 
 ```text
 成功 → 返回规范化值
 可选字段缺失且无默认 → 返回 MISSING
-非法 → 抛 ConfigError 子类
+配置值的结构/类型/缺失/空值/注册键错误
+→ 按具体情形抛 MissingFieldError、NullNotAllowedError、TypeMismatchError、UnknownFieldError、UnknownRegistryKeyError 或其他 ConfigError 子类
+Schema 节点定义参数非法
+→ 在构造阶段抛 TypeError 或 ValueError，不进入 normalize()
 ```
 
 统一副作用规则：不修改传入值。
@@ -543,7 +546,7 @@ normalizer=None
 
 调用者：父 `MappingSchema`、父 `SequenceSchema`，或者根节点测试。
 
-执行顺序和返回：
+执行顺序、返回值和异常类型：
 
 ```text
 value is MISSING
@@ -557,9 +560,15 @@ value is None
 
 value 是具体值
 ├── 类型不匹配 → 抛 TypeMismatchError
-├── 有 normalizer → 返回 normalizer(value)
-└── 否则 → 返回 value
+├── 有 normalizer → 调用 normalizer(value)
+│   ├── 正常返回 → 返回转换结果
+│   ├── 抛 ConfigError 子类 → 原样向上传递
+│   ├── 抛 ValueError/TypeError → 包装为 ParameterNormalizationError
+│   └── 其他异常 → 原样向上传递，视为 normalizer 实现缺陷
+└── 否则 → 返回原 value
 ```
+
+节点构造参数本身非法时，不进入 `normalize()`：参数类型错误抛 `TypeError`，参数取值或组合错误抛 `ValueError`。
 
 `normalizer` 只做明确且无歧义的转换，例如字符串 `strip()`；不能把 `"one"` 猜成数字 1。
 
@@ -614,10 +623,47 @@ YAML value:
 字段：
 
 ```text
-item_schema
-min_items=0
-max_items=None
-allow_none=false
+item_schema: SchemaNode
+required: bool = false
+default: Any = MISSING
+min_items: int = 0
+max_items: int | None = None
+allow_none: bool = false
+```
+
+`required`、`default`、`allow_none` 的语义与 `ScalarSchema` 一致：
+
+```text
+required=True 且 default is not MISSING
+→ Schema 定义错误，构造阶段抛 ValueError
+
+default is not MISSING 且 default 不是 list
+→ Schema 定义错误，构造阶段抛 TypeError
+
+default is None 且 allow_none=False
+→ Schema 定义错误，构造阶段抛 ValueError
+
+default 是 list 但长度不满足 min_items/max_items
+→ Schema 定义错误，构造阶段抛 ValueError
+
+default 是 list 但存在不符合 item_schema 的元素
+→ Schema 定义错误，构造阶段抛 ValueError 或 SchemaError
+→ 建议在 Schema 构造阶段执行无用户路径的默认值结构检查
+
+字段不存在且 default is not MISSING
+→ 返回 default 的 deepcopy
+
+字段不存在且 required=True 且无 default
+→ 抛 MissingFieldError
+
+字段不存在且 required=False 且无 default
+→ 返回 MISSING
+
+字段存在且 value is None 且 allow_none=True
+→ 返回 None
+
+字段存在且 value is None 且 allow_none=False
+→ 抛 NullNotAllowedError
 ```
 
 输入：当前 YAML list；返回：新 list。
@@ -625,15 +671,44 @@ allow_none=false
 执行顺序：
 
 ```text
-1. None 时检查 allow_none
-2. 不是 list → TypeMismatchError
-3. 长度小于 min_items 或超过 max_items → SchemaError
-4. result = []
-5. enumerate(value)
-6. item_schema.normalize(item, path.index(i), context)
-7. append 到 result
-8. 返回 result
+1. value is MISSING
+   ├── default is not MISSING → 返回 deepcopy(default)
+   ├── required=True → MissingFieldError
+   └── required=False → 返回 MISSING
+2. value is None
+   ├── allow_none=True → 返回 None
+   └── allow_none=False → NullNotAllowedError
+3. value 不是 list → TypeMismatchError
+4. len(value) < min_items 或 max_items is not None 且 len(value) > max_items
+   → SchemaError
+5. result = []
+6. enumerate(value)
+7. item_schema.normalize(item, path.index(i), context)
+8. 子结果不是 MISSING 时 append 到 result
+9. 返回 result
 ```
+
+`default` 是 Schema 定义者提供的、已经符合该 `SequenceSchema` 输出契约的默认列表，不在 `normalize()` 中再次调用 `item_schema.normalize()`。构造阶段必须检查：
+
+```text
+default is MISSING
+→ 没有默认值
+
+default 不是 list
+→ TypeError
+
+default 是 list 且长度小于 min_items
+→ ValueError
+
+default 是 list 且 max_items is not None 且长度超过 max_items
+→ ValueError
+```
+
+`default=None` 不属于 `SequenceSchema` 的合法默认值，即使 `allow_none=True` 也不例外。`allow_none` 只约束用户或 Override 实际传入的 `value`；它不改变 `default` 的类型契约。
+
+缺失字段使用默认值时，`normalize()` 只返回 `deepcopy(default)`，不重新检查列表长度，也不调用 `item_schema.normalize()`。因此 Schema 定义者必须保证默认列表及其元素符合 `item_schema`；默认值不经过 `normalizer` 或子 Schema 处理。
+
+列表元素的 `MISSING` 结果不进入返回列表，`None` 结果则保留。用户实际提供的列表会逐元素调用 `item_schema.normalize()`，并保留带索引的错误路径。
 
 示例：Loss 列表第 0 项错误时，子节点收到路径：
 
@@ -653,8 +728,8 @@ config.components.losses[0]
 基础缺失/None/类型处理
 → 根据 case_sensitive 规范化查询键
 → 在 choices 中查询
-→ 未找到时报 ConfigValidationError 或 SchemaError
-→ 返回 choices 映射的 canonical value
+→ 找到 → 返回 choices 映射的 canonical value
+→ 未找到 → 抛 SchemaError；消息包含实际值、允许值和 path
 ```
 
 适合：
@@ -672,12 +747,25 @@ model.init_from.kind
 
 输入：例如 `"AdamW"`；返回：`"adamw"`。
 
-执行：
+执行、返回值和异常类型：
 
 ```text
-基础缺失/None/字符串检查
+value is MISSING 且 required=True 且无 default
+→ MissingFieldError
+
+value is None 且 allow_none=False
+→ NullNotAllowedError
+
+value 不是 str
+→ TypeMismatchError
+
+value 是空字符串或去除首尾空白后为空
+→ SchemaError；消息包含 path 和“键不能为空”
+
+value 是非空字符串
 → registry.resolve_key(value)
-→ 返回 canonical key
+├── 成功 → 返回 canonical key
+└── 未注册 → 保留并向上传递 UnknownRegistryKeyError
 ```
 
 Registry 负责别名，不由 Schema 自己维护 `aliases_allowed`。
@@ -800,10 +888,12 @@ Mapping + Mapping
 
 Sequence + Sequence
 → 合并 item_schema
-→ min/max/allow_none 必须兼容
+→ required/default/min/max/allow_none 必须兼容
+→ default 都存在但值不同，抛 SchemaConflictError
 
 Scalar + Scalar
 → python_types、required、allow_none、default、normalizer 必须兼容
+→ default 的兼容性按 MISSING/实际值判断，值不同抛 SchemaConflictError
 
 不同节点类型
 → SchemaConflictError
@@ -1319,12 +1409,22 @@ PathNode 列表
 ├── allow_none → 保留 None
 └── 否则 → PathResolutionError
 
+当前值不是 str/pathlib.Path（且不是允许的 None）
+→ TypeMismatchError
+
 当前值是相对 Path
 ├── base=config_dir → context.config_dir / value
 └── base=字段引用 → resolved_base / value
 
 当前值是绝对 Path
 → 直接 resolve(strict=False)
+
+字段引用不存在或尚未按依赖顺序解析
+→ PathDependencyError
+
+deriver 不存在、不可调用或返回值无法转换为 Path
+→ PathResolutionError
+→ 若属于 deriver 注册/定义错误，抛 TypeError
 ```
 
 把结果写入新配置。这里不检查 `exists/is_file/is_dir`；这些是 Validator 的工作。
@@ -1458,7 +1558,7 @@ task_spec = services.task_registry.get(parsed.context.task_key)
 builder = task_spec.get_builder(parsed.context.mode_key)
 ```
 
-`get_builder()` 返回函数或其他可调用对象，不返回 Builder 名称字符串。
+`get_builder()` 返回函数或其他可调用对象，不返回 Builder 名称字符串。找不到对应 mode 或映射值不可调用时，抛 `ModeTaskMismatchError` 或 `TypeError`；前者表示任务不支持该模式，后者表示 TaskSpec 定义错误。
 
 ### `BuildContext`
 
@@ -3030,6 +3130,130 @@ runtime:
 不执行当前节点职责之外的业务逻辑
 ```
 
+#### 默认值的统一契约
+
+所有声明 `default` 的节点必须遵守同一条规则，不能按节点临时改变：
+
+```text
+default
+→ Schema 定义者提供的、已经符合当前节点“规范化输出契约”的值
+
+value is MISSING 且 default is not MISSING
+→ 返回 deepcopy(default)
+→ 流程立即结束
+→ 不再次执行当前节点的类型转换、normalizer 或子 Schema.normalize()
+```
+
+采用这条规则的原因：
+
+```text
+ScalarSchema 当前已经直接复制 default
+→ SequenceSchema 不能单独重新规范化 default
+→ 将来若 MappingSchema 拥有 default，也必须采用同一规则
+```
+
+因此职责分为：
+
+```text
+__post_init__()
+→ 检查 default 的节点级基本输出类型和当前节点可以无上下文判断的局部约束
+→ 例如 Sequence default 必须是 list，长度满足 min/max
+→ 例如 Enum default 必须是 canonical value
+
+normalize()
+→ 用户实际提供的 value 才经过完整类型检查、转换和子节点递归
+→ 缺失字段命中 default 时只 deepcopy 后返回
+```
+
+默认值不会获得用户配置的真实 `path` 和 `context`，所以构造阶段不得为了验证默认值而伪造路径或调用依赖上下文的子 `normalize()`。默认容器中的深层元素由 Schema 定义者负责保证符合子 Schema；后续若决定“默认值也完整规范化”，必须一次性修改所有拥有 default 的节点协议，不能只修改某一个类。
+
+`allow_none` 只约束用户或 Override 实际传入的 `value=None`，不自动表示 `default=None` 合法。每个节点必须单独声明自己的 default 输出类型；例如当前 `SequenceSchema.default` 只能是 `list` 或 `MISSING`。
+
+#### 容器节点的递归边界
+
+```text
+MappingSchema
+→ 配置值是 Mapping
+→ fields 中的 child_schema 才是 SchemaNode
+→ 调用 child_schema.normalize(raw_child, child_path, context)
+
+SequenceSchema
+→ 配置值是 list
+→ 列表中的 item 是普通配置值，不是 Schema
+→ item_schema 才是 SchemaNode
+→ 调用 item_schema.normalize(item, item_path, context)
+```
+
+容器节点不得根据运行时值的 `dict/list` 类型自动猜测子 Schema。只有显式声明为 `MappingSchema` 或 `SequenceSchema` 才递归相应结构；`ScalarSchema(python_types=(dict,))` 表示把整个 dict 当作一个叶子值。
+
+#### 逐类实现说明的强制粒度
+
+从本节开始，每个节点的实现说明都必须覆盖以下内容；后续开发与审查不得只写字段列表和几句概念描述：
+
+```text
+1. 类字段及每个默认值的准确语义
+2. __post_init__() 按真实执行顺序的每一项检查
+3. 每项检查使用 TypeError、ValueError 或哪一个 ConfigError 子类，以及原因
+4. normalize() 按真实控制流排列的 MISSING、default、None、类型和节点特有分支
+5. 每个分支返回什么、是否继续执行、是否修改输入
+6. 直接上游传入什么，直接下游调用什么
+7. 使用的标准库/项目 API、参数、返回值和容易写错的布尔短路顺序
+8. 与相似节点共用的规则
+9. 当前节点独有、不能机械照抄的规则
+10. 当前完成标准和暂时禁止实现的后续职责
+```
+
+说明可以不提供完整代码，但必须细致到开发者能够按控制流逐行实现，并能判断每个异常分支为何存在。
+
+#### 构造错误与配置错误的统一划分
+
+Schema 节点有两类失败，必须按错误来源选择异常，不能笼统写成“报错”：
+
+```text
+节点定义错误
+→ 开发者在 Python 中使用了非法构造参数
+→ 在节点 __post_init__() 中发现
+→ 参数类型错误抛 TypeError
+→ 参数取值或参数组合错误抛 ValueError
+
+配置值错误
+→ Schema 定义本身合法，但 YAML/Override 提供的 value 不符合规则
+→ 在 normalize() 中发现
+→ 抛 errors.py 中对应的 ConfigError 子类
+```
+
+统一约定：
+
+```text
+TypeError
+→ 构造参数的 Python 类型不符合接口
+→ 例如 python_types 不是 tuple、normalizer 不是 callable
+
+ValueError
+→ 构造参数类型正确，但值或参数组合非法
+→ 例如 python_types 为空、required=True 同时提供 default、min_items < 0
+
+MissingFieldError
+→ value is MISSING，且节点 required=True 且没有 default
+
+NullNotAllowedError
+→ value is None，但节点 allow_none=False
+
+TypeMismatchError
+→ YAML/Override 的具体值不是该节点允许的 Python 类型
+
+UnknownFieldError
+→ Mapping 输入包含未声明字段，且 allow_unknown=False
+
+SchemaError
+→ 配置规范化期间出现无法归入上述更具体类型的 Schema 结构错误；不要在已有具体异常可用时退化为它
+
+UnknownRegistryKeyError
+→ RegistryKeySchema 收到的字符串无法在 Registry 中解析
+```
+
+构造错误不使用 `ConfigError`，因为它们不是用户 YAML 的错误，也没有可靠的配置 `path`。配置错误必须携带当前 `path`、`actual_value`、`expected` 和节点来源 `source`（能够确定时），由入口统一格式化。
+
 ### `ScalarSchema`：普通叶子节点类
 
 构造字段：
@@ -3042,95 +3266,441 @@ default: Any = MISSING
 normalizer: Callable | None = None
 ```
 
-构造时检查：
+构造时检查及失败类型：
 
 ```text
-python_types 非空
-required=True 与 default!=MISSING 不同时使用
-normalizer 为 None 或可调用对象
+python_types 不是 tuple
+→ TypeError
+
+python_types 是空 tuple
+→ ValueError
+
+python_types 中任一元素不是 type 对象
+→ TypeError
+
+required 不是严格 bool
+→ TypeError
+
+allow_none 不是严格 bool
+→ TypeError
+
+required=True 且 default is not MISSING
+→ ValueError
+→ 必填字段和默认值语义冲突，二者不能同时启用
+
+normalizer 既不是 None 也不可调用
+→ TypeError
 ```
 
-`normalize()` 顺序：
+构造成功不返回额外结果；以上检查建议由 `__post_init__()` 完成。错误消息至少包含参数名、实际值或实际类型和预期规则。这里抛出的 `TypeError`/`ValueError` 表示 Python Schema 定义错误，不是 YAML 配置错误，因此不使用 `ConfigError` 子类。
+
+`normalize()` 顺序及失败类型：
 
 ```text
 1. value is MISSING
 2. 若 default 非 MISSING，返回 deepcopy(default)
-3. 否则若 required，抛 MissingFieldError
+3. 否则若 required=True，抛 MissingFieldError
 4. 否则返回 MISSING，交给父 Mapping 决定不写入结果
-5. value is None 时检查 allow_none
-6. 检查实际 Python 类型
-7. 有 normalizer 时调用
-8. 返回结果
+5. value is None 且 allow_none=True，返回 None
+6. value is None 且 allow_none=False，抛 NullNotAllowedError
+7. value 的类型不属于 python_types，抛 TypeMismatchError
+8. 有 normalizer 时调用 normalizer(value)
+9. normalizer 正常返回，返回其结果；没有 normalizer 时返回原 value
 ```
+
+`normalizer` 的异常边界：
+
+```text
+normalizer 主动抛 ConfigError 子类
+→ 原样向上传递，不捕获、不改写
+
+normalizer 因输入值违反其明确转换规则而抛 ValueError/TypeError
+→ 包装为 ParameterNormalizationError，并使用 raise ... from error 保留原异常
+
+normalizer 因实现缺陷抛出其他异常
+→ 不伪装成用户配置错误，原样向上传递
+```
+
+若 `normalizer` 返回值仍需满足 `python_types`，必须在接口设计中明确选择一种规则。本文第一版约定为：`python_types` 只约束 normalizer 的输入值，normalizer 的输出契约由该 normalizer 自身及后续 Validator 负责，不在 `ScalarSchema` 中进行第二次类型检查。
 
 严格整数要注意 `bool` 是 `int` 子类。需要严格整数时，不应只使用 `isinstance(value, int)`；可以在 normalizer/Validator 中使用 `type(value) is int`。
 
 ### `MappingSchema`：固定字典节点类
 
-构造字段：
+构造字段及失败类型：
 
 ```text
-fields: Mapping[str, SchemaNode]
-allow_unknown: bool = false
+fields 不是 Mapping
+→ TypeError
+
+fields 中的字段名不是 str
+→ TypeError
+
+fields 中的字段名是空字符串
+→ ValueError
+
+fields 中的节点不是 SchemaNode 实例
+→ TypeError
+
+allow_unknown 不是严格 bool
+→ TypeError
 ```
 
-`normalize()` 顺序：
+构造参数合法性检查建议由 `__post_init__()` 完成。错误消息至少包含参数名、实际值或类型和预期规则。这些是 Schema 定义错误，不是 YAML 配置错误，因此使用内置 `TypeError`/`ValueError`，不使用 `ConfigError` 子类。
+
+`normalize()` 顺序及失败类型：
 
 ```text
-1. 检查 value 是 dict/Mapping
+1. value 不是 Mapping
+   → TypeMismatchError
 2. 计算 value.keys - fields.keys
-3. allow_unknown=false 时抛 UnknownFieldError
+3. allow_unknown=False 且存在未知字段
+   → UnknownFieldError
 4. 创建空结果 dict
 5. 按 fields 的稳定顺序读取 value.get(name, MISSING)
 6. 调用子 Schema.normalize
 7. 子结果不是 MISSING 时写入结果
-8. allow_unknown=true 时 deepcopy 未知字段到结果
+8. allow_unknown=True 时 deepcopy 未知字段到结果
 9. 返回新 dict
 ```
+
+子节点抛出的 `MissingFieldError`、`NullNotAllowedError`、`TypeMismatchError` 等 `ConfigError` 必须原样向上传递，并保留子节点路径；Mapping 不应将它们统一包装成其他异常。
 
 为什么返回新 dict：默认值、路径和 params 后续还会继续规范化，不能污染原始 YAML 对象。
 
 ### `SequenceSchema`：列表节点类
 
-构造字段：
+字段：
 
 ```text
 item_schema: SchemaNode
+required: bool = false
+default: Any = MISSING
 min_items: int = 0
 max_items: int | None = None
 allow_none: bool = false
 ```
 
-`normalize()` 顺序：
+`required`、`default`、`allow_none` 的缺失语义与 `ScalarSchema` 一致，但 `default` 的类型契约由节点自身决定：
 
 ```text
-检查 None
-→ 检查 value 是 list
-→ 检查长度
-→ enumerate(value)
-→ item_schema.normalize(item, path.index(i), context)
-→ 返回新 list
+required=True 且 default is not MISSING
+→ Schema 定义错误，构造阶段抛 ValueError
+
+value is MISSING 且 default 是合法 list
+→ 返回 default 的 deepcopy
+
+value is MISSING 且 required=True 且无 default
+→ 抛 MissingFieldError
+
+value is MISSING 且 required=False 且无 default
+→ 返回 MISSING
+
+value is None 且 allow_none=True
+→ 返回 None
+
+value is None 且 allow_none=False
+→ 抛 NullNotAllowedError
 ```
+
+对 `SequenceSchema` 而言，`default` 的合法类型只有 `list` 或 `MISSING`：
+
+```text
+default is not MISSING 且 default 不是 list
+→ Schema 定义错误，构造阶段抛 TypeError
+
+包括 default=None
+→ 即使 allow_none=True 也仍然抛 TypeError
+```
+
+`allow_none` 只约束配置或 Override 实际传入的 `value`，不改变 `default` 的类型契约。
+
+构造字段及失败类型：
+
+```text
+item_schema 不是 SchemaNode 实例
+→ TypeError
+
+required/allow_none 不是严格 bool
+→ TypeError
+
+required=True 且 default is not MISSING
+→ ValueError
+
+default is not MISSING 且 default 不是 list
+→ TypeError
+→ 包括 default=None，即使 allow_none=True 也不例外
+
+default 是 list 且长度小于 min_items
+→ ValueError
+
+default 是 list 且 max_items is not None 且长度超过 max_items
+→ ValueError
+
+min_items 不是严格 int
+→ TypeError
+
+min_items < 0
+→ ValueError
+
+max_items 既不是 None 也不是严格 int
+→ TypeError
+
+max_items < 0
+→ ValueError
+
+max_items is not None 且 max_items < min_items
+→ ValueError
+```
+
+构造参数合法性检查建议由 `__post_init__()` 完成。这些是 Schema 定义错误，使用内置 `TypeError`/`ValueError`。
+
+`normalize()` 顺序及失败类型：
+
+```text
+1. value is MISSING
+   ├── default is not MISSING → 返回 deepcopy(default)，流程结束
+   ├── required=True → MissingFieldError
+   └── required=False → 返回 MISSING
+2. value is None
+   ├── allow_none=True → 返回 None
+   └── allow_none=False → NullNotAllowedError
+3. value 不是 list
+   → TypeMismatchError
+4. len(value) < min_items 或 max_items is not None 且 len(value) > max_items
+   → SchemaError
+   → 错误消息包含 path、实际长度、min_items 和 max_items
+5. result = []
+6. enumerate(value)
+7. item_schema.normalize(item, path.index(i), context)
+8. 子结果不是 MISSING 时 append 到 result
+9. 返回新的 result list
+```
+
+`default` 是已经符合本 `SequenceSchema` 输出契约的默认列表：构造阶段检查其类型和长度；缺失字段使用默认值时只 `deepcopy(default)` 并直接返回，不再次调用 `item_schema.normalize()`。这与 `ScalarSchema` 默认值直接复制返回的规则一致。默认列表的元素由 Schema 定义者负责保证符合 `item_schema`。
+
+列表元素的 `MISSING` 结果不进入返回列表，`None` 结果则保留。列表元素的具体错误由 `item_schema` 决定，并保留带索引的路径；`SequenceSchema` 不应将元素错误统一改写。
 
 YAML 中 tuple 不作为合法输入，避免 Parser 接受 YAML 无法自然表达的结构。
 
 ### `EnumSchema`：有限字符串节点类
 
-构造字段：
+#### 职责与特殊性
+
+`EnumSchema` 在概念上是“字符串类型检查 + 有限选项查询 + canonical 输出”。它和 `ScalarSchema(python_types=(str,))` 共用缺失、默认值和 `None` 语义，但有三个独有规则：
 
 ```text
-choices: Mapping[str, str] 或 set[str]
-case_sensitive: bool = false
-required/allow_none/default
+choices 可以是 set[str] 或 Mapping[str, str]
+case_sensitive 决定输入查询键如何匹配
+成功返回 canonical value，不一定返回用户原始字符串
 ```
 
-返回 canonical value。例如输入 `TRAIN`，返回 `train`。
+它只用于静态有限值，例如 `scheduler.interval`。`run.mode`、`task.type` 和组件 `type` 属于 Registry key，应使用 Bootstrap/RegistryKeySchema，不能维护重复 Enum。
 
-它适合 `scheduler.interval`；`run.mode` 在 Bootstrap 中使用 Registry 解析，不应重复维护两份允许值。
+#### 字段
+
+```text
+choices: Mapping[str, str] | set[str]
+case_sensitive: bool = false
+required: bool = false
+allow_none: bool = false
+default: Any = MISSING
+```
+
+两种 `choices` 的输出语义：
+
+```text
+set[str]
+→ 每个集合元素同时是允许的输入和 canonical 输出
+
+Mapping[str, str]
+→ key 是允许的输入或别名
+→ value 是返回的 canonical 输出
+```
+
+#### `__post_init__()` 的逐步流程
+
+按以下顺序检查，前一步失败后立即抛错，不继续访问依赖其前置条件的数据：
+
+```text
+1. 检查 choices 的容器类型
+   ├── 不是 Mapping 且不是 set → TypeError
+   └── 合法 → 继续
+
+2. 检查 choices 非空
+   ├── 为空 → ValueError
+   └── 非空 → 继续
+
+3. 若 choices 是 Mapping，按 items() 遍历
+   ├── key 不是 str → TypeError
+   ├── value 不是 str → TypeError
+   ├── key.strip() 为空 → ValueError
+   ├── value.strip() 为空 → ValueError
+   └── 全部合法 → 继续
+
+4. 若 choices 是 set，逐个遍历元素
+   ├── 元素不是 str → TypeError
+   ├── 元素 strip 后为空 → ValueError
+   └── 全部合法 → 继续
+
+5. 检查 case_sensitive
+   ├── type(case_sensitive) is not bool → TypeError
+   └── 合法 → 继续
+
+6. 检查 required
+   ├── type(required) is not bool → TypeError
+   └── 合法 → 继续
+
+7. 检查 allow_none
+   ├── type(allow_none) is not bool → TypeError
+   └── 合法 → 继续
+
+8. 检查 required/default 组合
+   ├── required=True 且 default is not MISSING → ValueError
+   └── 合法 → 继续
+
+9. 检查 default 的输出类型
+   ├── default is MISSING → 无默认值，构造完成
+   ├── default 不是 str，包括 None → TypeError
+   └── default 是 str → 继续
+
+10. 检查 default 是 canonical value
+    ├── choices 是 set → default 必须等于集合中的某个 canonical 元素
+    ├── choices 是 Mapping → default 必须等于 Mapping.values() 中的某个 canonical value
+    ├── 不满足 → ValueError
+    └── 满足 → 构造完成
+```
+
+默认值必须是 canonical 输出，不接受只存在于 Mapping key 中的别名。例如：
+
+```text
+choices={"training": "train", "train": "train"}
+default="train"
+→ 合法
+
+default="training"
+→ ValueError；它是输入别名，不是输出 canonical value
+```
+
+这遵守统一默认值契约：缺失时直接 `deepcopy(default)` 返回，不再做 choices 查询。
+
+#### 大小写和空白的匹配规则
+
+第一版固定为：
+
+```text
+case_sensitive=True
+→ 用户 value 原样作为 lookup key
+→ 不 strip，不 casefold
+
+case_sensitive=False
+→ 用户 value 先 strip()，再 casefold()
+→ choices 的输入侧也使用相同规则生成比较键
+→ 返回值始终使用 choices 中声明的 canonical 原文
+```
+
+构造阶段还必须检查“规范化后的输入键冲突”：
+
+```text
+case_sensitive=False 时
+→ "TRAIN" 与 " train " 的比较键都为 "train"
+→ 如果二者映射到不同 canonical value，抛 ValueError
+→ 如果映射到同一 canonical value，可视为重复别名；第一版也建议抛 ValueError，要求 Schema 定义去重
+```
+
+set 在 `case_sensitive=False` 时若多个元素规范化为同一比较键，同样抛 ValueError。这个检查是 `EnumSchema` 特有的，不能只验证原始容器没有重复项；Python set 只能消除原字符串重复，不能消除 casefold/strip 后的冲突。
+
+#### `normalize()` 的逐步流程
+
+```text
+1. value is MISSING
+   ├── default is not MISSING → 返回 deepcopy(default)，流程结束
+   ├── required=True → 抛 MissingFieldError
+   └── required=False → 返回 MISSING
+
+2. value is None
+   ├── allow_none=True → 返回 None，流程结束
+   └── allow_none=False → 抛 NullNotAllowedError
+
+3. 检查用户值类型
+   ├── value 不是 str → 抛 TypeMismatchError
+   └── value 是 str → 继续
+
+4. 生成 lookup key
+   ├── case_sensitive=True → lookup_key=value
+   └── case_sensitive=False → lookup_key=value.strip().casefold()
+
+5. 查询 choices
+   ├── choices 是 Mapping
+   │   → 对输入侧 key 使用相同匹配规则
+   │   → 找到时返回该 key 对应的 canonical value
+   └── choices 是 set
+       → 对集合元素使用相同匹配规则
+       → 找到时返回集合中声明的 canonical 原文
+
+6. 未找到 lookup key
+   → 抛 SchemaError
+   → 消息包含 path、实际 value 和允许的输入选项
+```
+
+`EnumSchema` 不使用 `normalizer`，因此没有 `ParameterNormalizationError` 分支。它不修改 `choices` 或用户输入，不返回 lookup key 的临时字符串；成功时返回 Schema 中声明的 canonical value。
+
+#### 直接数据流
+
+```text
+父 MappingSchema/SequenceSchema
+→ 传入 value、ConfigPath、ParseContext
+→ EnumSchema 处理缺失/None/字符串/选项
+→ 返回 MISSING、None 或 canonical str
+→ 父容器将结果写入新 dict/list
+```
+
+`context` 第一版不使用，但必须保留统一 `SchemaNode.normalize()` 签名。
+
+#### 容易写错的地方
+
+```text
+choices 元素类型错误应抛 TypeError，不是 ValueError
+默认值检查的是 canonical 输出集合，不是输入别名集合
+case_sensitive=False 时 choices 输入侧也必须 strip/casefold，不能只处理用户 value
+返回 canonical 原文，不能直接返回 lookup_key
+不要让 default 再次经过 choices 查询；它在构造阶段已经验证
+不要把未知枚举值报成 TypeMismatchError；它的 Python 类型已经是 str，应报 SchemaError
+```
+
+#### 当前完成标准
+
+```text
+所有构造参数按上述顺序检查
+规范化输入键冲突可诊断
+MISSING/default/required 行为与统一协议一致
+value=None 只由 allow_none 控制
+非 str 用户值抛 TypeMismatchError
+set 和 Mapping 都能返回 canonical 原文
+未知字符串抛 SchemaError
+不修改输入和 choices
+```
+
+当前步骤只实现 `EnumSchema`；不要同时开始 `RegistryKeySchema`、`PathSchema` 或 PolymorphicSchema。
 
 ### `RegistryKeySchema`：Registry 键节点类
 
-构造字段：
+#### 职责与特殊性
+
+`RegistryKeySchema` 处理的仍是字符串配置值，但允许集合不保存在节点内，而由 Registry 动态提供。它与 `EnumSchema` 的区别必须保持：
+
+```text
+EnumSchema
+→ 静态 choices
+→ 适合 interval 等固定有限值
+
+RegistryKeySchema
+→ 调用 registry.resolve_key(raw_key)
+→ 支持注册、别名和 canonical key
+→ 适合 task、component type 等扩展点
+```
+
+#### 字段
 
 ```text
 registry
@@ -3138,19 +3708,78 @@ required: bool = true
 allow_none: bool = false
 ```
 
-`normalize()`：
+第一版不提供 `default`：Registry key 通常是判别字段，缺失时应明确失败；若某调用点设置 `required=False`，缺失时返回 `MISSING`。
+
+#### `__post_init__()` 的逐步流程
 
 ```text
-检查非空 str
-→ registry.resolve_key(value)
-→ 返回 canonical key
+1. 检查 registry 接口
+   ├── registry is None → TypeError
+   ├── 没有可调用的 resolve_key 属性 → TypeError
+   └── 合法 → 继续
+
+2. 检查 required
+   ├── type(required) is not bool → TypeError
+   └── 合法 → 继续
+
+3. 检查 allow_none
+   ├── type(allow_none) is not bool → TypeError
+   └── 合法 → 构造完成
 ```
 
-调用 Registry 失败时保留原异常类型 `UnknownRegistryKeyError`。
+当前节点层不应为了类型检查导入未来具体 `BaseRegistry` 而制造循环依赖；第一版按最小协议检查 `resolve_key` 可调用。Registry 的完整定义合法性由 Registry 自身负责。
+
+#### `normalize()` 的逐步流程
+
+```text
+1. value is MISSING
+   ├── required=True → MissingFieldError
+   └── required=False → 返回 MISSING
+
+2. value is None
+   ├── allow_none=True → 返回 None
+   └── allow_none=False → NullNotAllowedError
+
+3. value 不是 str
+   → TypeMismatchError
+
+4. value.strip() 为空
+   → SchemaError
+   → 消息包含 path 和“Registry key 不能为空”
+
+5. 调用 registry.resolve_key(value)
+   ├── 成功 → 返回 canonical key
+   ├── UnknownRegistryKeyError → 原样向上传递
+   └── Registry 抛出的其他异常 → 原样传播，不在节点中猜测改写
+```
+
+节点不自行执行 `strip/casefold` 后查 Registry；它只在调用前拒绝空字符串。别名、大小写规则和 canonical 输出必须由 Registry 的唯一实现负责，避免 Bootstrap 与 Schema 使用不同规则。
+
+#### 直接数据流与完成标准
+
+```text
+父容器传入 raw key
+→ RegistryKeySchema 检查缺失/None/str/空白
+→ registry.resolve_key(raw key)
+→ 返回 canonical key
+→ 父容器写入新配置
+```
+
+完成标准：可选缺失返回 `MISSING`，空字符串不是未知键，未注册键保持 `UnknownRegistryKeyError`，成功值只来自 Registry，不修改输入。当前节点不注册 Spec、不创建组件、不访问 Bootstrap selections。
 
 ### `PolymorphicSchema`：多态组件外壳类
 
-构造字段：
+#### 职责与特殊性
+
+它只规范化组件节点的公共外壳：
+
+```text
+{discriminator, params_field, 其他公共字段}
+```
+
+它不能读取具体 `params_schema`，因为具体参数 Schema 取决于 Bootstrap 已选择的 ComponentSpec。第一阶段保留 `params=None` 或用户 Mapping；第二阶段 `normalize_polymorphic_nodes()` 才合并默认参数并调用具体 Schema。
+
+#### 字段
 
 ```text
 category: str
@@ -3159,40 +3788,208 @@ params_field: str = "params"
 common_schema: MappingSchema
 ```
 
-它的 `normalize()` 只处理：
+`common_schema` 必须显式包含 discriminator 与 params_field 对应的子 Schema；前者通常是 `RegistryKeySchema`，后者负责只接受 `None` 或 Mapping 的公共形态。
+
+#### `__post_init__()` 的逐步流程
 
 ```text
-公共字段
-规范化 type
-params 字段必须存在
-params 允许 None 或 dict
+1. 检查 category
+   ├── 不是 str → TypeError
+   ├── strip 后为空 → ValueError
+   └── 合法 → 继续
+
+2. 检查 discriminator
+   ├── 不是 str → TypeError
+   ├── strip 后为空 → ValueError
+   └── 合法 → 继续
+
+3. 检查 params_field
+   ├── 不是 str → TypeError
+   ├── strip 后为空 → ValueError
+   └── 合法 → 继续
+
+4. discriminator == params_field
+   → ValueError；两个角色不能指向同一字段
+
+5. common_schema 不是 MappingSchema
+   → TypeError
+
+6. discriminator 不在 common_schema.fields
+   → ValueError
+
+7. params_field 不在 common_schema.fields
+   → ValueError
+
+8. 全部通过
+   → 构造完成
 ```
 
-它不读取具体 `params_schema`。具体参数由 `normalize_polymorphic_nodes()` 处理。
-
-返回值仍是 dict，例如：
+#### `normalize()` 的逐步流程
 
 ```text
-{"type": "adamw", "params": None}
+1. value 不是 Mapping
+   → TypeMismatchError
+
+2. 调用 common_schema.normalize(value, path, context)
+   → 返回新的公共结构 dict
+   → MissingFieldError、UnknownFieldError、TypeMismatchError、UnknownRegistryKeyError 原样传播
+
+3. 从规范化结果读取 discriminator
+   ├── 不存在 → SchemaError；说明 common_schema 定义不符合 PolymorphicSchema 契约
+   └── 存在 → 已由其子 Schema 规范化为 canonical key
+
+4. 从规范化结果读取 params_field
+   ├── 不存在 → SchemaError；说明 common_schema 定义不符合契约
+   ├── 值是 None → 保留 None
+   ├── 值是 Mapping → 确保结果是新的 dict/Mapping 结果
+   └── 其他类型 → TypeMismatchError（通常应已由 common_schema 拒绝）
+
+5. 返回 common_schema 产生的新 dict
 ```
+
+此节点不再次查询 Registry、不调用 `context.get_selection()`、不合并 `default_params`、不运行组件 Validator。那些职责属于第二阶段 `normalize_polymorphic_nodes()`。
+
+#### 直接数据流与完成标准
+
+```text
+原始组件 Mapping
+→ common_schema.normalize
+→ type canonicalized、params 保持 None/Mapping
+→ 返回公共外壳
+→ 后续按 CompiledSchema.polymorphic_nodes 定位
+→ selection.spec.normalize_params(...)
+```
+
+完成标准：输入不修改；公共字段错误保留真实子路径；`params` 尚未保证为最终 dict；节点内没有具体任务、组件名称或参数分支。
 
 ### `PathSchema`：路径描述节点类
 
-可以继承 `ScalarSchema`，或组合一个 ScalarSchema。建议继承/封装后仍保证输入只允许 `str | pathlib.Path | None`。
+#### 职责与特殊性
 
-构造字段：
+`PathSchema` 只把结构层路径输入规范化为 `pathlib.Path`，不负责得到最终绝对路径，也不访问文件系统：
 
 ```text
-kind: "file" | "directory"
-base: PathBase
-allow_none
-allowed_suffixes: tuple[str, ...]
-must_exist: bool
-non_empty: bool
-resolver_name: str | None
+本节点 normalize
+→ str/pathlib.Path 转 pathlib.Path（可以仍是相对路径）
+
+resolve_paths
+→ 按 base 和依赖图得到绝对路径
+
+Validator
+→ 检查 exists、is_file/is_dir、后缀和目录非空
 ```
 
-本阶段 `normalize()` 只做类型检查和 `Path(value)` 转换；不拼接基准、不访问磁盘。
+这三个阶段不得合并。建议以组合或继承 `ScalarSchema` 的方式复用 MISSING/default/required/None 语义，但最终公共字段必须明确包含：
+
+```text
+required: bool = false
+default: pathlib.Path | MISSING = MISSING
+allow_none: bool = false
+kind: "file" | "directory"
+base: PathBase
+allowed_suffixes: tuple[str, ...] = ()
+must_exist: bool = false
+non_empty: bool = false
+resolver_name: str | None = None
+```
+
+默认值遵守统一契约：必须已经是 `pathlib.Path` 输出值；字符串只能作为用户输入，不能作为 default，缺失命中默认值时直接 deepcopy 返回。
+
+#### `__post_init__()` 的逐步流程
+
+```text
+1. 检查 required/allow_none/must_exist/non_empty 为严格 bool
+   → 任一错误抛 TypeError
+
+2. required=True 且 default is not MISSING
+   → ValueError
+
+3. default is not MISSING 且不是 pathlib.Path
+   → TypeError；包括 default=None 和 default=str
+
+4. kind 不是 str
+   → TypeError
+
+5. kind 不属于 {"file", "directory"}
+   → ValueError
+
+6. base 类型不符合 PathBase 协议
+   → TypeError
+
+7. base 值非法或字段引用为空
+   → ValueError
+
+8. allowed_suffixes 不是 tuple
+   → TypeError
+
+9. 遍历 allowed_suffixes
+   ├── 元素不是 str → TypeError
+   ├── 元素 strip 后为空 → ValueError
+   └── 建议要求以 "." 开头，否则 ValueError
+
+10. resolver_name 既不是 None 也不是 str
+    → TypeError
+
+11. resolver_name 是 str 但 strip 后为空
+    → ValueError
+
+12. non_empty=True 且 kind!="directory"
+    → ValueError；非空语义只适用于目录
+
+13. 全部通过
+    → 构造完成
+```
+
+`must_exist=False` 时仍可声明 `kind` 和后缀；这些信息供后续创建目标路径或其他 Validator 使用，不在 normalize 中检查。
+
+#### `normalize()` 的逐步流程
+
+```text
+1. value is MISSING
+   ├── default is not MISSING → 返回 deepcopy(default)，流程结束
+   ├── required=True → MissingFieldError
+   └── required=False → 返回 MISSING
+
+2. value is None
+   ├── allow_none=True → 返回 None
+   └── allow_none=False → NullNotAllowedError
+
+3. value 是 pathlib.Path
+   → 返回一个语义等价的 pathlib.Path
+   → 不 resolve，不检查存在性
+
+4. value 是 str
+   ├── value.strip() 为空 → SchemaError
+   ├── 调用 pathlib.Path(value)
+   ├── 转换成功 → 返回 Path
+   └── Path 构造抛 TypeError/ValueError/OSError
+       → 包装为 TypeMismatchError，并 raise ... from error
+
+5. 其他类型
+   → TypeMismatchError
+```
+
+不要在这里调用：
+
+```text
+Path.resolve()
+Path.exists()
+Path.is_file()
+Path.is_dir()
+Path.iterdir()
+```
+
+#### 直接数据流与完成标准
+
+```text
+父容器传入原始路径值
+→ PathSchema 返回 MISSING/None/pathlib.Path
+→ CompiledSchema 收集该 PathSchema 的 ConfigPath
+→ resolve_paths 按拓扑顺序处理
+→ Validator 检查文件系统语义
+```
+
+完成标准：相对路径仍保持相对；不读取磁盘；默认值只接受 Path；路径转换异常保留 cause；`kind/base/resolver_name` 只保存元数据，不在 normalize 中越权执行解析或推导。
 
 ### 本阶段不实现
 
@@ -3281,8 +4078,13 @@ merge_schema(left, right, path, left_source, right_source) → SchemaNode
 4. Scalar → 检查类型、required、allow_none、default、normalizer
 5. Path → 额外检查 kind/base/suffix/resolver
 6. Polymorphic → 检查 category/discriminator/params_field，再合并 common_schema
-7. 返回新的 SchemaNode
+7. 任一同名节点的约束不兼容
+   → SchemaConflictError
+   → 错误消息包含 path、left_source、right_source、冲突字段和两侧值
+8. 返回新的 SchemaNode
 ```
+
+Schema 合并阶段不会接收用户 YAML 值；因此这里的失败属于 Schema 定义冲突，应使用 `SchemaConflictError`，而不是 `TypeMismatchError` 或 `ConfigValidationError`。
 
 禁止修改 left/right。
 
@@ -3369,6 +4171,27 @@ main/parse/registries/tasks.py
 
 文件：`specs/validator.py`。
 
+构造参数及失败类型：
+
+```text
+name、phase、source 不是 str
+→ TypeError
+
+name、phase、source 为空字符串
+→ ValueError
+
+priority 不是严格 int
+→ TypeError
+
+validator 不是 callable
+→ TypeError
+
+applies_to 既不是 None 也不可调用
+→ TypeError
+```
+
+这些属于 ValidatorSpec 定义错误，应在 `__post_init__()` 中发现；不使用 `ConfigValidationError`，因为此时还没有用户配置值。
+
 字段：
 
 ```text
@@ -3421,24 +4244,40 @@ build(params, build_context) → Any
 
 ```text
 validate_definition
-→ key/category 非空
-→ aliases 规范化后不重复
-→ default_params 能通过 params_schema
-→ factory 为 None 或 callable
+→ key/category 不是字符串或为空
+   → TypeError 或 ValueError
+→ aliases 不是合法的字符串序列，或包含空字符串
+   → TypeError 或 ValueError
+→ aliases 规范化后不重复，且不与 canonical key 冲突
+   → 冲突时抛 ValueError
+→ default_params 不是 Mapping
+   → TypeError
+→ default_params 不能通过 params_schema
+   → SchemaError 或 ParameterNormalizationError
+→ factory 既不是 None 也不可调用
+   → TypeError
 
 normalize_params
+→ raw_params 既不是 None 也不是 Mapping
+   → TypeMismatchError
 → deepcopy(default_params)
 → raw_params=None 时不覆盖
-→ raw_params=dict 时覆盖
+→ raw_params 为 Mapping 时覆盖
 → params_schema.normalize
+   → 参数结构不合法时抛对应 SchemaError 子类
 → 依次运行 normalizers
+   → 参数规范化失败时抛 ParameterNormalizationError
 → 返回 dict
 
 validate_params
-→ 依次执行本组件 Validator
+→ 组件 Validator 返回 None
+→ 校验失败时抛 ConfigValidationError 或其子类
 
 build
-→ factory 为空时报错
+→ factory is None
+   → ParameterNormalizationError 或专门的构造错误
+→ factory 调用失败
+   → 原样传播，不能伪装成 YAML 结构错误
 → 否则返回 factory(params=params, context=build_context) 的结果
 ```
 
@@ -3507,7 +4346,7 @@ validate_definition() → None
 get_runner() → Callable
 ```
 
-`runner` 与 Task Builder 不同：Runner 负责 Train/Test/Inference 的运行过程；Task Builder 负责构造该任务所需组件。
+`runner` 与 Task Builder 不同：Runner 负责 Train/Test/Inference 的运行过程；Task Builder 负责构造该任务所需组件。`runner` 不是可调用对象时属于 ModeSpec 定义错误，抛 `TypeError`；`get_runner()` 成功返回 callable。
 
 ### `BaseRegistry`：有状态普通类
 
@@ -3533,15 +4372,27 @@ contains(key) → bool
 all_keys() → tuple[str, ...]
 ```
 
-`register()` 顺序：
+`register()` 顺序及失败类型：
 
 ```text
 检查 spec 类型
+→ 不是预期 Spec 类型时抛 TypeError
+
 → spec.validate_definition()
+→ Spec 定义字段非法时保留其 TypeError/ValueError
+
 → 规范化 canonical key
+→ key 不是非空字符串时抛 TypeError 或 ValueError
+
 → 检查 key 重复
+→ 已注册同名 key 时抛 ValueError
+
 → 逐个规范化 alias
+→ alias 类型错误或为空时抛 TypeError 或 ValueError
+
 → 检查 alias 与 key/alias 冲突
+→ 冲突时抛 ValueError
+
 → 写入 _specs/_aliases
 → 返回 None
 ```
@@ -3619,7 +4470,7 @@ read_required_string(raw, key, path) → str
 scan_descriptor(raw_config, descriptor, root_path) → list[(ConfigPath, Mapping)]
 ```
 
-辅助函数只做 Bootstrap 所需的最小类型检查，并抛 BootstrapError 子类。
+辅助函数只做 Bootstrap 所需的最小类型检查，并按失败原因抛 BootstrapError 子类：输入节点缺失抛 `BootstrapError` 或 `MissingFieldError`，节点不是 Mapping/字符串类型抛 `TypeMismatchError`，未知 Registry 键抛 `UnknownRegistryKeyError`，Mode 与 Task 不支持组合抛 `ModeTaskMismatchError`。同一阶段的错误不要统一包装成普通 `ValueError`。
 
 ### 主函数
 
@@ -4020,7 +4871,20 @@ require_file(path_value, path, suffixes=()) → None
 require_directory(path_value, path, non_empty=False) → None
 ```
 
-这些函数成功返回 `None`，失败抛 `ConfigValidationError`。它们不读取任意配置树，只校验传入值。
+这些函数成功返回 `None`，失败按校验来源抛出明确异常：
+
+```text
+传入值的 Python 类型或结构不符合函数契约
+→ TypeMismatchError
+
+业务值、数值范围、文件存在性、后缀或目录非空条件不满足
+→ ConfigValidationError
+
+当前设备或 CUDA 运行环境不满足
+→ RuntimeValidationError（仅 runtime.py）
+```
+
+它们不读取任意配置树，只校验传入值。
 
 ### `runtime.py`
 

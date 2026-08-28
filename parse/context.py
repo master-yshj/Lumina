@@ -14,6 +14,8 @@ class _MissingType:
         """
         return "MISSING"
 
+MISSING = _MissingType()
+
 @dataclass(frozen=True)
 class ConfigPath:
     """
