@@ -1,12 +1,14 @@
+import pathlib
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from copy import deepcopy
 from collections.abc import Mapping
 
 from parse.context import MISSING
 from parse.errors import ConfigError, MissingFieldError, NullNotAllowedError, TypeMismatchError, \
-    ParameterNormalizationError, UnknownFieldError, SchemaError
+    ParameterNormalizationError, UnknownFieldError, SchemaError, UnknownRegistryKeyError
 
 
 @dataclass(frozen=True)
@@ -213,21 +215,43 @@ class EnumSchema(SchemaNode):
         if not self.choices:
             raise ValueError(f"choices 不能为空喵!")
         if isinstance(self.choices, Mapping):
+            if self.default is not MISSING:
+                if self.default not in self.choices.values():
+                    raise ValueError(f"default: {self.default} 的值不合法喵! 合法的值有: {self.choices.values()}")
+            seen_lookup_keys = set()
             for choice_key, choice_value in self.choices.items():
                 if not isinstance(choice_key, str):
-                    raise ValueError(f"choices 中的键必须为str类型的喵! 当前key: {choice_key}, type: {type(choice_key)}")
+                    raise TypeError(f"choices 中的键必须为str类型的喵! 当前key: {choice_key}, type: {type(choice_key)}")
                 if not isinstance(choice_value, str):
-                    raise ValueError(f"choices 中的值必须为str类型的喵! 当前value: {choice_value}, type: {type(choice_value)}")
+                    raise TypeError(f"choices 中的值必须为str类型的喵! 当前value: {choice_value}, type: {type(choice_value)}")
                 if not choice_key.strip():
                     raise ValueError(f"choices 中的键不能为空喵!")
                 if not choice_value.strip():
                     raise ValueError(f"choices 中的值不能为空喵!")
+                if self.case_sensitive:
+                    choice_lookup_key = choice_key
+                else:
+                    choice_lookup_key = choice_key.strip().casefold()
+                if choice_lookup_key in seen_lookup_keys:
+                    raise ValueError(f"choice 中不能出现重复(不区分大小写)的key: {choice_key} 喵! ")
+                seen_lookup_keys.add(choice_lookup_key)
         if isinstance(self.choices, set):
+            if self.default is not MISSING:
+                if self.default not in self.choices:
+                    raise ValueError(f"default: {self.default} 的值不合法喵! 合法的值有: {self.choices}")
+            seen_lookup_keys = set()
             for choice in self.choices:
                 if not isinstance(choice, str):
-                    raise ValueError(f"choices 中的元素必须为str类型的喵!")
+                    raise TypeError(f"choices 中的元素必须为str类型的喵!")
                 if not choice.strip():
                     raise ValueError(f"choices 中的元素不能为空喵!")
+                if self.case_sensitive:
+                    choice_lookup_key = choice
+                else:
+                    choice_lookup_key = choice.strip().casefold()
+                if choice_lookup_key in seen_lookup_keys:
+                    raise ValueError(f"choice 中不能出现重复(不区分大小写)的元素: {choice} 喵! ")
+                seen_lookup_keys.add(choice_lookup_key)
         if not type(self.case_sensitive) is bool:
             raise TypeError(f"case_sensitive: {self.case_sensitive} 必须为bool类型的喵! 当前的type: {type(self.case_sensitive)}")
         if not type(self.required) is bool:
@@ -236,3 +260,249 @@ class EnumSchema(SchemaNode):
             raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 当前的type: {type(self.allow_none)}")
         if self.required is True and self.default is not MISSING:
             raise ValueError(f"required 为True时，default必须为MISSING类型的喵! 现在default的type: {type(self.default)}")
+        if self.default is not MISSING:
+            if not isinstance(self.default, str):
+                raise TypeError(f"default 不为MISSING时必须为str类型的喵! 现在的type: {type(self.default)}")
+
+    def normalize(self, value, path, context) -> Any:
+        if value is MISSING:
+            if self.default is not MISSING:
+                return deepcopy(self.default)
+            if self.required:
+                raise MissingFieldError(f"path: {path} 该配置中缺失了该字段喵!")
+            else:
+                return MISSING
+        elif value is None:
+            if self.allow_none is True:
+                return None
+            else:
+                raise NullNotAllowedError(f"path: {path}: {value} 该配置的值不能为空喵!")
+        else:
+            if not isinstance(value, str):
+                raise TypeMismatchError(f"path: {path}: {value} 必须为字符串类型的喵! 现在的type: {type(value)}")
+            if self.case_sensitive:
+                lookup_key = value
+            else:
+                lookup_key = value.strip().casefold()
+            if isinstance(self.choices, Mapping):
+                for choice_key, choice_value in self.choices.items():
+                    if self.case_sensitive:
+                        choice_lookup_key = choice_key
+                    else:
+                        choice_lookup_key = choice_key.strip().casefold()
+                    if choice_lookup_key == lookup_key:
+                        return choice_value
+            if isinstance(self.choices, set):
+                for choice in self.choices:
+                    if self.case_sensitive:
+                        choice_lookup_key = choice
+                    else:
+                        choice_lookup_key = choice.strip().casefold()
+                    if choice_lookup_key == lookup_key:
+                        return choice
+            raise SchemaError(f"path: {path}: {value} 不合法喵! 允许: {self.choices}")
+
+
+
+@dataclass(frozen=True)
+class RegistryKeySchema(SchemaNode):
+    """
+    Registry键节点类
+    """
+    registry: Any
+    required: bool = True
+    allow_none: bool = False
+
+    def __post_init__(self):
+        if self.registry is None:
+            raise TypeError(f"registry: {self.registry} 不能为空喵!")
+        if not hasattr(self.registry, "resolve_key") or not callable(self.registry.resolve_key):
+            raise TypeError(f"registry: {self.registry} 中没有可以调用的resolve_key喵!")
+        if not type(self.required) is bool:
+            raise TypeError(f"required: {self.required} 必须为bool类型的喵! 现在的type: {type(self.required)}")
+        if not type(self.allow_none) is bool:
+            raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 现在的type: {type(self.allow_none)}")
+
+    def normalize(self, value, path, context) -> Any:
+        if value is MISSING:
+            if self.required:
+                raise MissingFieldError(f"path: {path} 该配置中缺失了该字段喵!")
+            else:
+                return MISSING
+        elif value is None:
+            if self.allow_none is True:
+                return None
+            else:
+                raise NullNotAllowedError(f"path: {path}: {value} 该配置的值不能为空喵!")
+        else:
+            if not isinstance(value, str):
+                raise TypeMismatchError(f"path: {path}: {value} 必须为str类型的喵! 现在的type: {type(value)}")
+            if not value.strip():
+                raise SchemaError(f"path: {path}: {value} 注册表的键不能为空喵!")
+            try:
+                resolved_value = self.registry.resolve_key(value)
+            except UnknownRegistryKeyError:
+                raise
+            except Exception:
+                raise
+            return resolved_value
+
+@dataclass(frozen=True)
+class PolymorphicSchema(SchemaNode):
+    """
+    PolymorphicSchema: 多态组件外壳类
+    """
+    category: str
+    common_schema: MappingSchema
+    discriminator: str = "type"
+    params_field: str = "params"
+
+    def __post_init__(self):
+        if not isinstance(self.category, str):
+            raise TypeError(f"category: {self.category} 必须为str类型的喵! 现在的type: {type(self.category)}")
+        if not self.category.strip():
+            raise ValueError(f"category 不能为空喵!")
+        if not isinstance(self.discriminator, str):
+            raise TypeError(f"discriminator: {self.discriminator} 必须为str类型的喵! 现在的type: {type(self.discriminator)}")
+        if not self.discriminator.strip():
+            raise ValueError(f"discriminator 不能为空喵!")
+        if not isinstance(self.params_field, str):
+            raise TypeError(f"params_field: {self.params_field} 必须为str类型的喵! 现在的type: {type(self.params_field)}")
+        if not self.params_field.strip():
+            raise ValueError(f"params_field 不能为空喵!")
+        if self.discriminator == self.params_field:
+            raise ValueError(f"discriminator: {self.discriminator}\n"
+                             f"params_field: {self.params_field}\n"
+                             f"不能指向同一字段喵!")
+        if not isinstance(self.common_schema, MappingSchema):
+            raise TypeError(f"common_schema: {self.common_schema} 必须为MappingSchema喵! 现在的type: {type(self.common_schema)}")
+        if not self.discriminator in self.common_schema.fields:
+            raise ValueError(f"discriminator: {self.discriminator} 必须在 common_schema.fields: {self.common_schema.fields} 中喵!")
+        if not self.params_field in self.common_schema.fields:
+            raise ValueError(f"params_field: {self.params_field} 必须在 common_schema.fields: {self.common_schema.fields} 中喵!")
+
+    def normalize(self, value, path, context) -> Any:
+        if not isinstance(value, Mapping):
+            raise TypeMismatchError(f"path: {path}: {value} 必须为Mapping喵! 现在的type: {type(value)}")
+        try:
+            normalized_value = self.common_schema.normalize(value, path, context)
+        except (MissingFieldError, UnknownFieldError, TypeMismatchError, UnknownRegistryKeyError):
+            raise
+        try:
+            normalized_discriminator = normalized_value[self.discriminator]
+        except KeyError as e:
+            raise SchemaError(f"common_schema 不符合 PolymorphicSchema 契约喵! 找不到 discriminator 喵!")
+        try:
+            normalized_params = normalized_value[self.params_field]
+        except KeyError as e:
+            raise SchemaError(f"common_schema 不符合 PolymorphicSchema 契约喵! 找不到 params_fields 喵!")
+        if normalized_params is not None and not isinstance(normalized_params, Mapping):
+            raise TypeMismatchError(
+                f"path: {path.child(self.params_field)}: {normalized_params} "
+                f"必须为None或者Mapping类型的喵! "
+                f"现在的type: {type(normalized_params)}"
+            )
+        return normalized_value
+
+@dataclass(frozen=True)
+class PathSchema(SchemaNode):
+    """
+    PathSchema 路径描述节点类
+    """
+    base: Any
+    kind: Literal["file", "directory"]
+    required: bool = False
+    default: Any = MISSING
+    allow_none: bool = False
+    allowed_suffixes: tuple[str, ...] = ()
+    must_exist: bool = False
+    non_empty: bool = False
+    resolver_name: str | None = None
+
+    def __post_init__(self):
+        if not type(self.required) is bool:
+            raise TypeError(f"required: {self.required} 必须为bool类型的喵! 现在的type: {type(self.required)}")
+        if not type(self.allow_none) is bool:
+            raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 现在的type: {type(self.allow_none)}")
+        if not type(self.must_exist) is bool:
+            raise TypeError(f"must_exist: {self.must_exist} 必须为bool类型的喵! 现在的type: {type(self.must_exist)}")
+        if not type(self.non_empty) is bool:
+            raise TypeError(f"non_empty: {self.non_empty} 必须为bool类型的喵! 现在的type: {type(self.non_empty)}")
+        if self.required is True and self.default is not MISSING:
+            raise ValueError(f"在 required: {self.required} 时, default: {self.default} 必须为MISSING喵!")
+        if self.default is not MISSING and not isinstance(self.default, pathlib.Path):
+            raise ValueError(f"default 不为MISSING时必须为pathlib.Path类型喵! 现在的type: {type(self.default)}")
+        if not isinstance(self.kind, str):
+            raise TypeError(f"kind: {self.kind} 必须为str类型的喵! 现在的type: {type(self.kind)}")
+        if not self.kind in ["file", "directory"]:
+            raise ValueError(f"kind: {self.kind} 必须属于 ['file','directory'] 喵!")
+        if not isinstance(self.allowed_suffixes, tuple):
+            raise TypeError(
+                f"allowed_suffixes: {self.allowed_suffixes} 必须为tuple类型的喵! "
+                f"现在的type: {type(self.allowed_suffixes)}"
+            )
+
+        for suffix in self.allowed_suffixes:
+            if not isinstance(suffix, str):
+                raise TypeError(
+                    f"allowed_suffixes 中的元素必须为str类型的喵! "
+                    f"当前元素: {suffix}"
+                )
+            if not suffix.strip():
+                raise ValueError(
+                    f"allowed_suffixes 中每个后缀不能为空喵!"
+                    f"当前元素: {suffix}"
+                )
+            if not suffix.startswith("."):
+                raise ValueError(
+                    f"allowed_suffixes 中的后缀必须以 '.' 开头喵! 当前后缀: {suffix}"
+                )
+
+        if self.resolver_name is not None:
+            if not isinstance(self.resolver_name, str):
+                raise TypeError(
+                    f"resolver_name: {self.resolver_name} 必须为str或None类型的喵!"
+                )
+            if not self.resolver_name.strip():
+                raise ValueError(
+                    "resolver_name 不能为空字符串喵!"
+                )
+
+        if self.non_empty and self.kind != "directory":
+            raise ValueError(
+                "non_empty=True 时，kind 必须为 'directory' 喵!"
+            )
+
+    def normalize(self, value, path, context) -> Any:
+        if value is MISSING:
+            if self.default is not MISSING:
+                return deepcopy(self.default)
+            if self.required:
+                raise MissingFieldError(
+                    f"path: {path} 配置中缺少了该字段喵!"
+                )
+            return MISSING
+        if value is None:
+            if self.allow_none:
+                return None
+            raise NullNotAllowedError(
+                f"path: {path}: {value} 该配置的值不能为空喵!"
+            )
+        if isinstance(value, pathlib.Path):
+            return pathlib.Path(value)
+        if isinstance(value, str):
+            if not value.strip():
+                raise SchemaError(
+                    f"path: {path}: {value} 路径不能为空喵!"
+                )
+            try:
+                return pathlib.Path(value)
+            except (TypeError, ValueError, OSError) as e:
+                raise TypeMismatchError(
+                    f"path: {path}: {value} 该路径无法转换为pathlib.Path类型喵!"
+                ) from e
+        else:
+            raise TypeMismatchError(
+                f"path: {path}: {value} 必须为str或pathlib.Path类型的喵! "
+                f"现在的type: {type(value)}"
+            )
