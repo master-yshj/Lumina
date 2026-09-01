@@ -33,4 +33,6 @@ def walk_schema(root_node, root_path=ConfigPath.root("config")):
         yield from walk_schema(item_schema, item_path)
     if isinstance(root_node, PolymorphicSchema):
         common_schema = root_node.common_schema
-        yield from walk_schema(common_schema, root_path)
+        for field_name, field_schema in common_schema.fields.items():
+            field_path = root_path.child(field_name)
+            yield from walk_schema(field_schema, field_path)

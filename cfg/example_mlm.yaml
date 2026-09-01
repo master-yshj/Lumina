@@ -1,0 +1,133 @@
+# TinyBert MLM 预训练完整示例配置
+# 通用 Parser 根据 run.mode、task.type 和各组件 type 动态解码；
+# 本文件与 example_qa.yaml 共用顶层结构，
+# 仅 task/组件/数据/参数由 MLM 的具体 Spec 声明。
+
+version: 1
+
+experiment:
+  name: TinyBert_MLM_PreTrain
+  seed: 42
+
+run:
+  mode: train
+  resume_from: null
+
+task:
+  type: mlm_pretrain
+
+components:
+  tokenizer:
+    type: exampletokenizer
+    params:
+      vocab_file_path: ../tokenizer/bert_base_chinese_tokenizer/vocab.txt
+      do_lower_case: true
+      strip_accents: null
+      max_input_chars_per_word: 100
+
+  model:
+    type: tinybertformaskedlm
+    params:
+      hidden_size: 128
+      max_position_embeddings: 128
+      type_vocab_size: 2
+      num_heads: 4
+      intermediate_size: 512
+      num_layers: 2
+      embedding_dropout: 0.1
+      attention_dropout: 0.1
+      hidden_dropout: 0.1
+      layer_norm_eps: 1.0e-12
+    init_from: null
+
+  losses:
+    - name: mlm_cross_entropy
+      type: cross_entropy
+      weight: 1.0
+      params:
+        ignore_index: -100
+
+data:
+  dataset:
+    type: tiny_zhwiki
+    root: ../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    splits:
+      train: tiny_zhwiki_train.jsonl
+      valid: tiny_zhwiki_val.jsonl
+      test: tiny_zhwiki_test.jsonl
+    params:
+      max_seq_length: 128
+      mlm_prob: 0.15
+
+  loaders:
+    train:
+      batch_size: 8
+      shuffle: true
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    valid:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+
+optimization:
+  optimizer:
+    type: adamw
+    params:
+      lr: 0.001
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1.0e-8
+
+  scheduler:
+    type: step_lr
+    interval: step
+    params:
+      step_size: 1000
+      gamma: 0.1
+      last_epoch: -1
+
+  loop:
+    total_steps: 10000
+    accumulation_steps: 1
+    log_every_steps: 100
+
+  validation:
+    enabled: true
+    every_steps: 500
+    early_stopping:
+      enabled: true
+      patience: 10
+    checkpoint:
+      save_every_rounds: 1
+
+evaluation:
+  test_after_train: false
+  metrics:
+    train:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+    valid:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+    test:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1

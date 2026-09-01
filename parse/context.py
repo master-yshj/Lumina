@@ -23,6 +23,21 @@ class ConfigPath:
     """
     parts: tuple[str | int, ...]
 
+    def __post_init__(self):
+        if not isinstance(self.parts, tuple):
+            raise TypeError(f"parts: {self.parts} 必须为tuple类型的喵! 现在的type: {type(self.parts)}")
+        if not self.parts:
+            raise ValueError("parts 不能为空喵!")
+        for part in self.parts:
+            if isinstance(part, str):
+                if not part.strip():
+                    raise ValueError(f"parts: {self.parts} part: {part} 不能为空喵!")
+            elif type(part) is int:
+                if part < 0:
+                    raise ValueError(f"parts: {self.parts} part: {part} 不能为负数喵!")
+            else:
+                raise TypeError(f"parts: {self.parts} 中的元素都必须为str或int类型的喵! part: {part} 现在的type: {type(part)}")
+
     @classmethod
     def root(cls, name: str) -> "ConfigPath":
         if not isinstance(name, str):
@@ -36,7 +51,7 @@ class ConfigPath:
             raise TypeError(f"name(ConfigPath 子节点名称): {name} 必须为一个str类型的数据喵! 现在的type: {type(name)}")
         if not name.strip():
             raise ValueError(f"name(ConfigPath 子节点名称) 不能为空喵!")
-        return ConfigPath(self.parts + (name,))
+        return ConfigPath(self.parts + (name.strip(),))
 
     def index(self, value: int) -> "ConfigPath":
         if not type(value) is int:
@@ -83,6 +98,36 @@ class ParseContext:
     task_key: str
     selections: Mapping[ConfigPath, ComponentSelection]
     validate_runtime: bool
+
+    def __post_init__(self):
+        if not isinstance(self.config_path, pathlib.Path):
+            raise TypeError(f"config_path: {self.config_path} 必须为pathlib.Path类型的喵! 现在的type: {type(self.config_path)}")
+        if not isinstance(self.config_dir, pathlib.Path):
+            raise TypeError(f"config_dir: {self.config_dir} 必须为pathlib.Path类型的喵! 现在的type: {type(self.config_dir)}")
+        if isinstance(self.expected_mode, str):
+            if not self.expected_mode.strip():
+                raise ValueError(f"expected_mode 在为字符串类型时不能为空喵!")
+        elif self.expected_mode is None:
+            pass
+        else:
+            raise TypeError(f"expected_mode: {self.expected_mode} 必须为str类型或None喵! 现在的type: {type(self.expected_mode)}")
+        if not isinstance(self.mode_key, str):
+            raise TypeError(f"mode_key: {self.mode_key} 必须为str类型的喵! 现在的type: {type(self.mode_key)}")
+        if not self.mode_key.strip():
+            raise ValueError(f"mode_key 不能为空喵!")
+        if not isinstance(self.task_key, str):
+            raise TypeError(f"task_key: {self.task_key} 必须为str类型的喵! 现在的type: {type(self.task_key)}")
+        if not self.task_key.strip():
+            raise ValueError(f"task_key 不能为空喵!")
+        if not isinstance(self.selections, Mapping):
+            raise TypeError(f"selections: {self.selections} 必须为Mapping类型的喵! 现在的type: {type(self.selections)}")
+        for selection_path, selection in self.selections.items():
+            if not isinstance(selection_path, ConfigPath):
+                raise TypeError(f"selections的键: {selection_path} 必须为ConfigPath类型的喵!")
+            if not isinstance(selection, ComponentSelection):
+                raise TypeError(f"selections[{selection_path}] 必须为ComponentSelection类型的喵!")
+        if not type(self.validate_runtime) is bool:
+            raise TypeError(f"validate_runtime: {self.validate_runtime} 必须为bool类型的喵! 现在的type: {type(self.validate_runtime)}")
 
     def get_selection(self, path: ConfigPath) -> ComponentSelection:
         if not path in self.selections:

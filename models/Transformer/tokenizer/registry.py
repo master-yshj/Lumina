@@ -8,3 +8,10 @@ TOKENIZER_REGISTRY = {
 }
 
 SUPPORTED_TOKENIZERS = set(TOKENIZER_REGISTRY)
+
+class TokenizerRegistry:
+    """
+    tokenizer的注册表
+    """
+
+    def register(self, canonical_key, alias, ):

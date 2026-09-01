@@ -86,6 +86,7 @@ class MappingSchema(SchemaNode):
     """
     fields: Mapping[str, SchemaNode]
     allow_unknown: bool = False
+    allow_none: bool = False
 
     def __post_init__(self):
         if not isinstance(self.fields, Mapping):
@@ -99,8 +100,17 @@ class MappingSchema(SchemaNode):
                 raise TypeError(f"fields.{key}: {value} 必须为SchemaNode类型的喵! 现在的type: {type(value)}")
         if not type(self.allow_unknown) is bool:
             raise TypeError(f"allow_unknown: {self.allow_unknown} 必须为bool类型的喵! 现在的type: {type(self.allow_unknown)}")
+        if not type(self.allow_none) is bool:
+            raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 现在的type: {type(self.allow_none)}")
 
     def normalize(self, value, path, context) -> Any:
+        if value is MISSING:
+            return MISSING
+        if value is None:
+            if self.allow_none:
+                return None
+            else:
+                raise NullNotAllowedError(f"path: {path}: {value} 该配置的值不能为空喵!")
         if not isinstance(value, Mapping):
             raise TypeMismatchError(f"path: {path}: {value} 必须为Mapping类型的喵! 现在的type: {type(value)}")
         unknown_keys = value.keys() - self.fields.keys()
@@ -212,12 +222,17 @@ class EnumSchema(SchemaNode):
     def __post_init__(self):
         if not isinstance(self.choices, (Mapping,set)):
             raise TypeError(f"choices: {self.choices} 必须为Mapping或者set类型的喵! 现在的type: {type(self.choices)}")
+        if not type(self.case_sensitive) is bool:
+            raise TypeError(f"case_sensitive: {self.case_sensitive} 必须为bool类型的喵! 当前的type: {type(self.case_sensitive)}")
+        if not type(self.required) is bool:
+            raise TypeError(f"required: {self.required} 必须为bool类型的喵! 当前的type: {type(self.required)}")
+        if not type(self.allow_none) is bool:
+            raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 当前的type: {type(self.allow_none)}")
+        if self.required is True and self.default is not MISSING:
+            raise ValueError(f"required 为True时，default必须为MISSING类型的喵! 现在default的type: {type(self.default)}")
         if not self.choices:
             raise ValueError(f"choices 不能为空喵!")
         if isinstance(self.choices, Mapping):
-            if self.default is not MISSING:
-                if self.default not in self.choices.values():
-                    raise ValueError(f"default: {self.default} 的值不合法喵! 合法的值有: {self.choices.values()}")
             seen_lookup_keys = set()
             for choice_key, choice_value in self.choices.items():
                 if not isinstance(choice_key, str):
@@ -252,17 +267,15 @@ class EnumSchema(SchemaNode):
                 if choice_lookup_key in seen_lookup_keys:
                     raise ValueError(f"choice 中不能出现重复(不区分大小写)的元素: {choice} 喵! ")
                 seen_lookup_keys.add(choice_lookup_key)
-        if not type(self.case_sensitive) is bool:
-            raise TypeError(f"case_sensitive: {self.case_sensitive} 必须为bool类型的喵! 当前的type: {type(self.case_sensitive)}")
-        if not type(self.required) is bool:
-            raise TypeError(f"required: {self.required} 必须为bool类型的喵! 当前的type: {type(self.required)}")
-        if not type(self.allow_none) is bool:
-            raise TypeError(f"allow_none: {self.allow_none} 必须为bool类型的喵! 当前的type: {type(self.allow_none)}")
-        if self.required is True and self.default is not MISSING:
-            raise ValueError(f"required 为True时，default必须为MISSING类型的喵! 现在default的type: {type(self.default)}")
         if self.default is not MISSING:
             if not isinstance(self.default, str):
                 raise TypeError(f"default 不为MISSING时必须为str类型的喵! 现在的type: {type(self.default)}")
+            if isinstance(self.choices, Mapping):
+                canonical_values = set(self.choices.values())
+            else:
+                canonical_values = set(self.choices)
+            if self.default not in canonical_values:
+                raise ValueError(f"default: {self.default} 必须是canonical value喵! 合法值: {canonical_values}")
 
     def normalize(self, value, path, context) -> Any:
         if value is MISSING:
@@ -394,14 +407,20 @@ class PolymorphicSchema(SchemaNode):
             raise SchemaError(f"common_schema 不符合 PolymorphicSchema 契约喵! 找不到 discriminator 喵!")
         try:
             normalized_params = normalized_value[self.params_field]
-        except KeyError as e:
-            raise SchemaError(f"common_schema 不符合 PolymorphicSchema 契约喵! 找不到 params_fields 喵!")
-        if normalized_params is not None and not isinstance(normalized_params, Mapping):
-            raise TypeMismatchError(
-                f"path: {path.child(self.params_field)}: {normalized_params} "
-                f"必须为None或者Mapping类型的喵! "
-                f"现在的type: {type(normalized_params)}"
-            )
+        except KeyError:
+            normalized_params = MISSING
+        if normalized_params is MISSING:
+            pass
+        else:
+            if normalized_params is None:
+                pass
+            else:
+                if not isinstance(normalized_params, Mapping):
+                    raise TypeMismatchError(
+                        f"path: {path.child(self.params_field)}: {normalized_params} "
+                        f"必须为None或者Mapping类型的喵! "
+                        f"现在的type: {type(normalized_params)}"
+                    )
         return normalized_value
 
 @dataclass(frozen=True)
@@ -431,7 +450,7 @@ class PathSchema(SchemaNode):
         if self.required is True and self.default is not MISSING:
             raise ValueError(f"在 required: {self.required} 时, default: {self.default} 必须为MISSING喵!")
         if self.default is not MISSING and not isinstance(self.default, pathlib.Path):
-            raise ValueError(f"default 不为MISSING时必须为pathlib.Path类型喵! 现在的type: {type(self.default)}")
+            raise TypeError(f"default 不为MISSING时必须为pathlib.Path类型喵! 现在的type: {type(self.default)}")
         if not isinstance(self.kind, str):
             raise TypeError(f"kind: {self.kind} 必须为str类型的喵! 现在的type: {type(self.kind)}")
         if not self.kind in ["file", "directory"]:
@@ -453,7 +472,7 @@ class PathSchema(SchemaNode):
                     f"allowed_suffixes 中每个后缀不能为空喵!"
                     f"当前元素: {suffix}"
                 )
-            if not suffix.startswith("."):
+            if not suffix.strip().startswith("."):
                 raise ValueError(
                     f"allowed_suffixes 中的后缀必须以 '.' 开头喵! 当前后缀: {suffix}"
                 )

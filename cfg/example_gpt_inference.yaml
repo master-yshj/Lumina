@@ -1,0 +1,27 @@
+# GPT SFT Inference 示例配置
+# 结构与 MLM/QA Inference 一致；
+# GPT 当前暂无真实 Inferencer，本文件用于保持三任务配置结构统一。
+
+version: 1
+
+experiment:
+  name: TinyBert_GPT_SFT_Inference
+
+run:
+  mode: inference
+  checkpoint:
+    path: ../experiments/TinyBert_GPT_SFT/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_GPT_SFT/config/config.yaml
+
+inference:
+  max_seq_length: 128
+  decoding:
+    type: top_k_sampling
+    params:
+      top_k: 5
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1

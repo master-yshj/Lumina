@@ -9,7 +9,23 @@ class ConfigError(Exception):
         :param expected: 预期的规则
         :param source: 错误来自于哪一个模块或扩展
         """
+
+        if not isinstance(message, str):
+            raise TypeError(f"message: {message} 必须为str类型的喵! 现在的type: {type(message)}")
+        if isinstance(source, str):
+            if not source.strip():
+                raise ValueError(f"source 在为字符串类型时不能为空喵!")
+        elif source is None:
+            pass
+        else:
+            raise TypeError(f"source: {source} 只能为str类型或None喵! 现在的type: {type(source)}")
+
         super(ConfigError, self).__init__(message)
+        self.message = message
+        self.actual_value = actual_value
+        self.path = path
+        self.expected = expected
+        self.source = source
 
 class YamlLoadError(ConfigError):
     """

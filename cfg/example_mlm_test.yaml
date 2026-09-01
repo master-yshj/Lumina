@@ -1,0 +1,45 @@
+# MLM 预训练 Test 示例配置
+# run.mode=test 结构固定：run.checkpoint、data、evaluation.metrics.test、runtime；
+# Tokenizer/Model/Loss 结构从训练配置读取，不在本文件重复填写。
+
+version: 1
+
+experiment:
+  name: TinyBert_MLM_PreTrain_Test
+
+run:
+  mode: test
+  checkpoint:
+    path: ../experiments/TinyBert_MLM_PreTrain/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/config/config.yaml
+
+data:
+  dataset:
+    type: tiny_zhwiki
+    root: ../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    splits:
+      test: tiny_zhwiki_test.jsonl
+    params:
+      max_seq_length: 128
+      mlm_prob: 0.15
+
+  loaders:
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+
+evaluation:
+  metrics:
+    test:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1

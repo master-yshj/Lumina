@@ -31,7 +31,18 @@ Validator 只校验，不修改配置。
 抛出包含完整字段路径、预期规则、实际值和实际类型的异常
 ```
 
-## 2. 调用顺序
+## 2. 当前已确认的顶层运行边界
+
+```text
+optimization：仅 train 必须；train 时不能是 null/{}``
+evaluation：train/test 按实际流程要求；inference 当前不要求
+runtime：缺失/null/{} 默认 cpu、index=null、count=1
+metrics：当前使用阶段必须是非空列表；type 统一 Registry 解析；params 按 metric type 动态确定；同一阶段不能重复
+Task-Metric 兼容性：Parser 不检查，由运行时统一 output_dict 提供输入
+Checkpoint：Parser 不选择 best/last，由 Runner 按候选路径查找，全部失败才报错
+```
+
+## 3. 调用顺序
 
 ```text
 validate_experiment()

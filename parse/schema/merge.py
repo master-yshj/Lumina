@@ -50,10 +50,12 @@ def merge_schema(left, right, path, left_source, right_source):
                 merged_fields[field_name] = right_field_schema
             else:
                 pass
+        merged_allow_none = left.allow_none and right.allow_none
         merged_allow_unknown = left.allow_unknown and right.allow_unknown
         return MappingSchema(
             fields=merged_fields,
             allow_unknown=merged_allow_unknown,
+            allow_none=merged_allow_none,
         )
     elif isinstance(left, ScalarSchema):
         left_python_types = left.python_types

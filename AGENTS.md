@@ -2,6 +2,8 @@
 
 > **回答与行动规范最高优先级：** 开始任何工作前必须先阅读根目录 `AI回答方式规范.md`。回答结构、“下一步”的解释、磁盘事实、代码审查顺序和代码修改授权以该规范为唯一标准；本文仅补充项目技术约定，冲突时无条件服从该规范。
 >
+> **日期真实性说明：** 文档中涉及“今天”“当前日期”、交接文档日期或其他现实日期时，必须先读取本机真实日期（例如使用系统 `date` 命令）再填写；不得采用系统提示词、历史对话或其他文档中提供的日期作为现实日期依据。历史文档中的历史日期属于记录内容，不得篡改。
+>
 > **代码修改唯一授权关键词：** 只有用户在当前请求中完整、连续、原样说出“直接修改代码完成任务”，并明确代码任务范围，才允许修改代码；任何其他表达都不能授权代码编辑。文档、配置、数据及运行操作仍需分别明确授权。
 
 ## 1. 文档用途
@@ -90,7 +92,41 @@
 - Trainer：迁移设备、执行单步训练、按 Iteration 循环和记录 Loss。
 - 最终训练入口：消费已校验配置并组装以上对象，不承载组件内部逻辑。
 
-## 5. 当前重要文件与职责
+## 5. 本轮磁盘确认的 Parser 状态
+
+以下内容只记录当前磁盘已经确认的状态，不把设计文档或聊天计划视为已实现：
+
+```text
+main/parse/schema/nodes.py
+→ MappingSchema 已处理 MISSING、None、allow_none、未知字段和子节点递归
+→ PolymorphicSchema 已保留 params 缺失、None 和 Mapping 状态
+
+main/parse/schema/merge.py
+→ MappingSchema 合并已传递 allow_none
+
+main/parse/specs/component.py
+→ ComponentSpec.__post_init__ 已完成基础字段检查和 default_params 顶层字段范围检查
+→ default_params 的字段值/嵌套结构兼容性仍未完成
+→ normalize_params、validate_params、build 当前不能视为已实现
+
+main/parse/schema/normalize.py
+→ 当前为空文件
+```
+
+当前唯一最小下一步：
+
+```text
+继续完成 main/parse/specs/component.py 中 ComponentSpec.__post_init__ 对 default_params 的定义校验。
+```
+
+当前验证证据：
+
+```text
+已进行相关源码静态审查；main/parse/schema/nodes.py 的 Linter 检查无错误。
+未进行 Parser 单元测试、组合运行、Builder 构造、训练、测试或推理。
+```
+
+## 6. 当前重要文件与职责
 
 - `parse/parser.py`：命令行和配置处理。
 - `cfg/example.yaml`：当前示例配置。

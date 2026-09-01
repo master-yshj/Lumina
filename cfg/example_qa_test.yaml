@@ -1,0 +1,44 @@
+# QA SFT Test 示例配置
+# run.mode=test：Parser 要求 run.checkpoint、data、evaluation.metrics.test、runtime；
+# Model/Tokenizer/Loss 结构从训练配置读取，不在本文件重复填写。
+
+version: 1
+
+experiment:
+  name: TinyBert_QA_SFT_Test
+
+run:
+  mode: test
+  checkpoint:
+    path: ../experiments/TinyBert_QA_SFT/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_QA_SFT/config/config.yaml
+
+data:
+  dataset:
+    type: cmrc2018
+    root: ../dataset/QA/SFT/CMRC2018/tiny_cmrc2018
+    splits:
+      test: tiny_cmrc2018_test.jsonl
+    params: {}
+
+  loaders:
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+
+evaluation:
+  metrics:
+    test:
+      - type: exact_match
+        params: {}
+      - type: character_f1
+        params: {}
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1

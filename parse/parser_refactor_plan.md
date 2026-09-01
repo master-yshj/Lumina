@@ -69,20 +69,34 @@ experiment:
 
 run:
   mode: train
-  resume_from: null
+  resume_from: ../experiments/TinyBert_QA_SFT/latest/checkpoints/last.pt
 
 task:
   type: qa_sft
-  params: null
 
 components:
   tokenizer:
-    type: qa_wordpiece
-    params: null
+    type: qatokenizer
+    params:
+      vocab_file_path: ../tokenizer/bert_base_chinese_tokenizer/vocab.txt
+      do_lower_case: true
+      strip_accents: false
+      max_input_chars_per_word: 100
 
   model:
-    type: tinybert_qa
-    params: null
+    type: tinybertforquestionanswering
+    params:
+      model_path: ../models/Transformer
+      hidden_size: 128
+      max_position_embeddings: 128
+      type_vocab_size: 2
+      num_heads: 4
+      intermediate_size: 512
+      num_layers: 2
+      embedding_dropout: 0.1
+      attention_dropout: 0.1
+      hidden_dropout: 0.1
+      layer_norm_eps: 1.0e-12
     init_from:
       kind: backbone
       path: ../experiments/mlm/checkpoints/best.pt
@@ -91,7 +105,8 @@ components:
     - name: qa_cross_entropy
       type: cross_entropy
       weight: 1.0
-      params: null
+      params:
+        ignore_index: -100
 
 data:
   dataset:
@@ -101,11 +116,9 @@ data:
       train: tiny_cmrc2018_train.jsonl
       valid: tiny_cmrc2018_val.jsonl
       test: tiny_cmrc2018_test.jsonl
-    params: null
+    params: {}
 
-  collator:
-    type: qa_span
-    params: null
+  # Collator 由 QA Builder 固定选择，不出现在 YAML 中。
 
   loaders:
     train:
@@ -130,12 +143,19 @@ data:
 optimization:
   optimizer:
     type: adamw
-    params: null
+    params:
+      lr: 0.001
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1.0e-8
 
   scheduler:
     type: step_lr
     interval: step
-    params: null
+    params:
+      step_size: 1000
+      gamma: 0.1
+      last_epoch: -1
 
   loop:
     total_steps: 50000
@@ -156,23 +176,23 @@ evaluation:
   metrics:
     train:
       - type: exact_match
-        params: null
+        params: {}
       - type: character_f1
-        params: null
+        params: {}
     valid:
       - type: exact_match
-        params: null
+        params: {}
       - type: character_f1
-        params: null
+        params: {}
     test:
       - type: exact_match
-        params: null
+        params: {}
       - type: character_f1
-        params: null
+        params: {}
 
 runtime:
   device:
-    type: cuda
+    type: cpu
     index: null
     count: 1
 ```

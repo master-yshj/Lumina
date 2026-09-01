@@ -1,0 +1,27 @@
+# MLM 预训练 Inference 示例配置
+# run.mode=inference：Parser 要求 run.checkpoint、顶层 inference 分区、runtime；
+# Tokenizer/Model 结构从训练配置读取，Parser 不在这里重复解码模型参数。
+
+version: 1
+
+experiment:
+  name: TinyBert_MLM_PreTrain_Inference
+
+run:
+  mode: inference
+  checkpoint:
+    path: ../experiments/TinyBert_MLM_PreTrain/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/config/config.yaml
+
+inference:
+  max_seq_length: 128
+  decoding:
+    type: top_k_sampling
+    params:
+      top_k: 5
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1
