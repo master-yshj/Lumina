@@ -1,6 +1,8 @@
 from collections.abc import Mapping
 from copy import deepcopy
 
+from parse.errors import UnknownRegistryKeyError
+
 
 class Registry:
     def __init__(self, category, canonical_map, lookup_map):
@@ -20,7 +22,7 @@ class Registry:
         if not lookup_map:
             raise ValueError(f"lookup_map 不能为空喵!")
         for canonical_key, canonical_value in canonical_map.items():
-            if not isinstance(canonical_value, str):
+            if not isinstance(canonical_key, str):
                 raise TypeError(f"canonical_map: {canonical_map} canonical_key: {canonical_key} 必须为str类型的喵! 现在的type: {type(canonical_key)}")
             if not canonical_key.strip():
                 raise ValueError(f"canonical_map: {canonical_map} 里面的canonical_key都不能为空喵!")
@@ -55,7 +57,7 @@ class Registry:
         if not isinstance(canonical_key, str):
             raise TypeError(f"canonical_key: {canonical_key} 必须为str类型的喵! 现在的type: {type(canonical_key)}")
         if not canonical_key.strip():
-            raise ValueError(f"canonical_key 必须为空喵!")
+            raise ValueError(f"canonical_key 不能为空喵!")
         normalized_canonical_key = canonical_key.strip().casefold()
         normalized_aliases = []
         for alias in aliases:
@@ -74,3 +76,55 @@ class Registry:
             raise ValueError(f"规范化名称normalized_canonical_key: {normalized_canonical_key} 不能与lookup_map: {self.lookup_map} 冲突喵!")
         if registered_object is None:
             raise TypeError(f"registered_object: {registered_object} 不能为None喵!")
+        for normalized_alias in normalized_aliases:
+            if not normalized_alias in set(self.lookup_map.keys()):
+                pass
+            elif self.lookup_map[normalized_alias] == normalized_canonical_key:
+                pass
+            else:
+                raise ValueError(f"normalized_alias: {normalized_alias} 指向的是: {self.lookup_map[normalized_alias]}\n"
+                                 f"normalized_canonical_key: {normalized_canonical_key}\n"
+                                 f"normalized_alias 在 lookup_map 中必须指向 normalized_canonical_key 喵!\n")
+        canonical_map = deepcopy(self.canonical_map)
+        lookup_map = deepcopy(self.lookup_map)
+        canonical_map.update({
+            normalized_canonical_key: registered_object,
+        })
+        lookup_map.update({
+            normalized_canonical_key: normalized_canonical_key,
+        })
+        for normalized_alias in normalized_aliases:
+            lookup_map.update({
+                normalized_alias: normalized_canonical_key,
+            })
+        self.canonical_map = canonical_map
+        self.lookup_map = lookup_map
+
+    def resolve_key(self, raw_key):
+        if not isinstance(raw_key, str):
+            raise TypeError(f"raw_key: {raw_key} 必须为str类型的喵! 现在的type: {type(raw_key)}")
+        if not raw_key.strip():
+            raise ValueError(f"raw_key 不能为空喵!")
+        normalized_raw_key = raw_key.strip().casefold()
+        try:
+            canonical_key = self.lookup_map[normalized_raw_key]
+        except KeyError:
+            raise UnknownRegistryKeyError(f"lookup_map: {self.lookup_map} 中没有找到normalized_raw_key: {normalized_raw_key} 对应的 canonical_key 喵!")
+        return canonical_key
+
+    def get(self, canonical_key):
+        if not isinstance(canonical_key, str):
+            raise TypeError(f"canonical_key: {canonical_key} 必须为str类型的喵! 现在的type: {type(canonical_key)}")
+        if not canonical_key.strip():
+            raise ValueError(f"canonical_key 不能为空喵!")
+        normalized_canonical_key = canonical_key.strip().casefold()
+        try:
+            registered_object = self.canonical_map[normalized_canonical_key]
+        except KeyError:
+            raise UnknownRegistryKeyError(f"canonical_map: {self.canonical_map} 中没有找到normalized_canonical_key: {normalized_canonical_key} 对应的 registered_object 喵!")
+        return registered_object
+
+    def keys(self):
+        canonical_keys = self.canonical_map.keys()
+        canonical_tuple = tuple(canonical_keys)
+        return canonical_tuple

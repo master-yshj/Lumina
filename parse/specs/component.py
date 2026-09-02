@@ -1,10 +1,12 @@
+import pathlib
+
 from collections.abc import Mapping, Callable
 from dataclasses import dataclass
 from typing import Any
 from copy import deepcopy
 
 from parse.errors import UnknownFieldError, TypeMismatchError
-from parse.schema.nodes import MappingSchema, SchemaNode
+from parse.schema.nodes import MappingSchema, SchemaNode, PathSchema, ScalarSchema
 from parse.specs.validator import ValidatorSpec
 from parse.schema.merge import merge_schema
 
@@ -112,3 +114,29 @@ class ComponentSpec:
             normalized_params = normalizer(normalized_params, path, context)
         return normalized_params
 
+example_tokenizer_params_schema = MappingSchema(
+    fields={
+        "vocab_file_path": PathSchema(
+            base=pathlib.Path("."),
+            kind="file",
+            allowed_suffixes=(".jsonl",),
+            must_exist=True,
+        ),
+        "do_lower_case": ScalarSchema(
+            python_types=(bool,),
+            default=True,
+        ),
+        "strip_accents": ScalarSchema(
+            python_types=(bool, type(None)),
+            allow_none=True,
+            default=None,
+        ),
+        "max_input_chars_per_word": ScalarSchema(
+            python_types=(int,),
+            default=100
+    },
+    allow_unknown=False,
+    allow_none=False,
+)
+
+class ExampleTokenizerSpec(ComponentSpec):
