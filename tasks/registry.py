@@ -23,7 +23,6 @@ canonical_map = {
     "mlmpretrain_inference": build_mlm_inference,
     "qasft_train": build_qa_sft,
     "qasft_test": build_qa_test,
-    "qasft_inference": build_qa_test,
 }
 
 lookup_map = {
