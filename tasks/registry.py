@@ -31,13 +31,11 @@ lookup_map = {
     "mlmpretrain_inference": "mlmpretrain_inference",
     "qasft_train": "qasft_train",
     "qasft_test": "qasft_test",
-    "qasft_inference": "qasft_inference",
     "mlm_pretrain_train": "mlmpretrain_train",
     "mlm_pretrain_test": "mlmpretrain_test",
     "mlm_pretrain_inference": "mlmpretrain_inference",
     "qa_sft_train": "qasft_train",
     "qa_sft_test": "qasft_test",
-    "qa_sft_inference": "qasft_inference",
 }
 
 TASK_BUILDER_REGISTRY = Registry(

@@ -1,0 +1,38 @@
+# PARSE_REFACTOR_DEMO: Smoke Test 专用 MLM Test 配置。
+# Test 只声明数据、指标和运行环境，不重复声明训练组件。
+version: 1
+experiment:
+  name: parse_smoke_mlm_test
+task: mlmpretrain_test
+run:
+  checkpoint:
+    # PARSE_REFACTOR_DEMO: 路径相对于 main/cfg/smoke_test/ 解析。
+    path: ../../checkpoints/best.pt
+    train_config: cfg/smoke_test/mlm_train.yaml
+data:
+  dataset:
+    type: tiny_zhwiki
+    # PARSE_REFACTOR_DEMO: 路径相对于 main/cfg/smoke_test/ 解析。
+    root: ../../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    splits:
+      test: tiny_zhwiki_test.jsonl
+    params:
+      max_seq_length: 128
+      mlm_prob: 0.15
+  loaders:
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+evaluation:
+  metrics:
+    test:
+      - type: token_accuracy
+        params: {}
+runtime:
+  device:
+    type: cpu
+    index: null
+    count: 1

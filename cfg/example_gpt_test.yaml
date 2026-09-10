@@ -7,8 +7,9 @@ version: 1
 experiment:
   name: TinyBert_GPT_SFT_Test
 
+task: gptsft_test
+
 run:
-  mode: test
   checkpoint:
     path: ../experiments/TinyBert_GPT_SFT/checkpoints/best.pt
     train_config: ../experiments/TinyBert_GPT_SFT/config/config.yaml

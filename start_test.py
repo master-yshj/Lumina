@@ -1,18 +1,24 @@
 
-from parse.copy.test_parser import parse_args, load_config
+from parse.parser import parse_args, parse_config
 from logger.logger import RunLogger
 from device import check_device
 from tasks.registry import TASK_BUILDER_REGISTRY
 from Tester.test_runner import run_test
 from experiments import create_test_directories
 
+EXPECTED_MODE = "test"
+
 def main():
     args = parse_args()
     config_path = args.config
-    config_dict = load_config(config_path)
+    config_dict, parse_context, compiled_schema = parse_config(
+        config_path=config_path,
+        expected_mode=EXPECTED_MODE,
+        validate_runtime=True,
+    )
 
-    train_config_path = config_dict["checkpoint"]["config_path"]
-    checkpoint_path = config_dict["checkpoint"]["path"]
+    train_config_path = config_dict["run"]["checkpoint"]["train_config"]
+    checkpoint_path = config_dict["run"]["checkpoint"]["path"]
     train_config_dir = train_config_path.parent
     experiment_dir = train_config_dir.parent
     test_directories = create_test_directories(experiment_dir)
@@ -24,28 +30,29 @@ def main():
     logger = RunLogger(test_logs_path)
     logger.start({
         "运行模式": "TEST",
-        "实验名称": config_dict["name"],
+        "实验名称": config_dict["experiment"]["name"],
         "任务名称": config_dict["task"],
-        "运行设备": config_dict["cuda"]["device"],
+        "运行设备": config_dict["runtime"]["device"]["type"],
         "测试配置文件": config_path,
         "训练配置文件": train_config_path,
         "结果目录": test_dir,
         "日志文件": test_logs_path,
         "指标目录": test_metrics_path,
-        "Checkpoint": config_dict["checkpoint"]["path"],
+        "Checkpoint": config_dict["run"]["checkpoint"]["path"],
     })
 
     logger.info(f"测试即将开始喵!")
 
-    device = config_dict["cuda"]["device"]
-    gpu_nums = config_dict["cuda"]["gpu_nums"]
+    device = config_dict["runtime"]["device"]["type"]
+    gpu_nums = config_dict["runtime"]["device"]["count"]
     device_summary = check_device(device, gpu_nums)
 
     logger.info(f"当前设备信息: {device_summary}")
 
     # 获取任务类型
     task_type = config_dict["task"].strip().casefold()
-    task_builder = TASK_BUILDER_REGISTRY[task_type]
+    TASK_BUILDER_CANONICAL_MAP = TASK_BUILDER_REGISTRY.canonical_map
+    task_builder = TASK_BUILDER_CANONICAL_MAP[task_type]
     task_components = task_builder(
         config_dict=config_dict,
         test_metrics_path=test_metrics_path,

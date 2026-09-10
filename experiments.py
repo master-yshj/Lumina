@@ -217,3 +217,35 @@ def create_inference_directories(experiment_dir):
     directories["inference_logs_path"] = inference_logs_path
     print(directories)
     return directories
+
+def create_visualize_directories(experiment_dir, visualize_methods):
+    if not isinstance(experiment_dir, pathlib.Path):
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为pathlib.Path类型的喵!")
+    if not experiment_dir.exists():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须存在喵!")
+    if not experiment_dir.is_dir():
+        raise ValueError(f"experiment_dir: {experiment_dir} 必须为目录喵!")
+    if not isinstance(visualize_methods, list):
+        raise TypeError(f"visualize_methods: {visualize_methods} 必须为list类型的喵! 现在的type: {type(visualize_methods)}")
+    if not visualize_methods:
+        raise ValueError(f"visualize_methods 不能为空喵!")
+    if not all(isinstance(visualize_method, str) for visualize_method in visualize_methods):
+        raise ValueError(f"visualize_methods 里面的元素都必须为str类型的喵!")
+    current_time = time.strftime("%Y%m%d_%H%M%S")
+    visualize_dir = experiment_dir / "visualize" / current_time
+    num = 1
+    while visualize_dir.exists():
+        visualize_dir = experiment_dir / "visualize" / (current_time + f"_{num:02d}")
+        num += 1
+    os.makedirs(visualize_dir)
+    print(experiment_dir)
+    print(visualize_dir)
+    directories = {
+        "visualize_dir": visualize_dir,
+    }
+    for visualize_method in visualize_methods:
+        single_dir = visualize_dir / visualize_method
+        if not single_dir.exists():
+            os.makedirs(single_dir)
+        directories[visualize_method] = single_dir
+    return directories

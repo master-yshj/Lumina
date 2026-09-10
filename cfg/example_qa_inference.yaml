@@ -5,10 +5,13 @@
 version: 1
 
 experiment:
-  name: TinyBert_QA_SFT_Inference
+  name: qasft_inference
+
+# qasft_inference 当前仅作为配置占位，等待对应 Builder 注册。
+
+task: qasft_inference
 
 run:
-  mode: inference
   checkpoint:
     path: ../experiments/TinyBert_QA_SFT/checkpoints/best.pt
     train_config: ../experiments/TinyBert_QA_SFT/config/config.yaml

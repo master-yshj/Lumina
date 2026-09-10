@@ -2,7 +2,7 @@ import random
 import numpy
 import torch
 
-from parse.copy.parser import parse_args, load_config, normalize_resume_path
+from parse.parser import parse_args, parse_config, normalize_resume_path
 from tasks.registry import TASK_BUILDER_REGISTRY
 from experiments import create_experiments_directories, save_config_snapshot, resolve_resume_experiment_paths
 from logger.logger import RunLogger
@@ -10,18 +10,28 @@ from metrics.output.plotter import plot_csv_metrics
 from device import check_device
 from Tester.test_runner import run_test
 
+EXPECTED_MODE="train"
+
 def main():
     args = parse_args()
     config_path = args.config
     resume = args.resume
-    config_dict = load_config(config_path, resume)
+    # PARSE_REFACTOR_DEMO: 训练入口统一使用新版 Parse；Builder 暂时仍按
+    # 旧字段读取，后续由 Builder 迁移阶段解决配置字段适配。
+    config_dict, parse_context, compiled_schema = parse_config(
+        config_path=config_path,
+        expected_mode=EXPECTED_MODE,
+        validate_runtime=True,
+    )
 
     # resume 实验目录复用
     resume_path = normalize_resume_path(resume)
 
+    experiment_dict = config_dict["experiment"]
+
     if resume_path is None:
         # 创建实验目录
-        name = config_dict["name"]
+        name = experiment_dict["name"]
         experiment_paths = create_experiments_directories(name)
         # 配置保存目录
         config_dir = experiment_paths["config_dir"]
@@ -35,10 +45,10 @@ def main():
     logger = RunLogger(log_path)
     logger.start({
         "运行模式": "TRAIN" if resume_path is None else "RESUME",
-        "实验名称": config_dict["name"],
+        "实验名称": experiment_dict["name"],
         "任务名称": config_dict["task"],
-        "随机种子": config_dict["seed"],
-        "运行设备": config_dict["cuda"]["device"],
+        "随机种子": experiment_dict["seed"],
+        "运行设备": config_dict["runtime"]["device"]["type"],
         "配置文件": config_path,
         "实验目录": experiment_paths["experiment_dir"],
         "日志文件": log_path,
@@ -48,21 +58,22 @@ def main():
 
     logger.info("开始设置随机种子了喵~")
 
-    device = config_dict["cuda"]["device"]
-    gpu_nums = config_dict["cuda"]["gpu_nums"]
+    device = config_dict["runtime"]["device"]["type"]
+    gpu_nums = config_dict["runtime"]["device"]["count"]
     device_summary = check_device(device, gpu_nums)
 
     logger.info(f"当前设备信息: {device_summary}")
 
     # 设置种子
-    seed = config_dict["seed"]
+    seed = experiment_dict["seed"]
     random.seed(seed)
     numpy.random.seed(seed)
     torch.manual_seed(seed)
 
     # 获取任务类型
     task_type = config_dict["task"].strip().casefold()
-    task_builder = TASK_BUILDER_REGISTRY[task_type]
+    TASK_BUILDER_CANONICAL_MAP = TASK_BUILDER_REGISTRY.canonical_map
+    task_builder = TASK_BUILDER_CANONICAL_MAP[task_type]
     task_components = task_builder(
         config_dict,
         resume=resume_path,
@@ -81,7 +92,7 @@ def main():
     plot_csv_metrics(train_metrics_path, figures_dir)
     plot_csv_metrics(valid_metrics_path, figures_dir)
 
-    if config_dict["test"]["enabled"]:
+    if config_dict["evaluation"]["test_after_train"]:
         test_metrics_path = task_components["test_metrics_path"]
         test_metrics_writer = task_components["test_metrics_writer"]
         test_metric_collection = task_components["test_metric_collection"]

@@ -5,14 +5,11 @@ experiment:
   seed: 42
 
 run:
-  mode: train
   resume_from: null
 
-task:
-  type: qa_sft
+task: qasft_train
 
-components:
-  tokenizer:
+tokenizer:
     type: qatokenizer
     params:
       vocab_file_path: ../tokenizer/bert_base_chinese_tokenizer/vocab.txt
@@ -20,12 +17,12 @@ components:
       strip_accents: false
       max_input_chars_per_word: 100
 
-  model:
+model:
     type: tinybertforquestionanswering
     params:
       model_path: ../models/Transformer
       hidden_size: 128
-      max_position_embeddings: 128
+      max_position_embeddings: 768
       type_vocab_size: 2
       num_heads: 4
       intermediate_size: 512
@@ -36,64 +33,64 @@ components:
       layer_norm_eps: 1.0e-12
     init_from:
       kind: backbone
-      path: ../experiments/mlm/checkpoints/best.pt
+      path: ../experiments/TinyBert_MLM_PreTrain/20260910_025839/checkpoints/best.pt
 
-  losses:
+losses:
     - name: qa_cross_entropy
       type: cross_entropy
       weight: 1.0
       params:
         ignore_index: -100
 
+# PARSE_REFACTOR_DEMO: Dataset 和 loaders 与 MLM 配置保持一致，统一放在 data 下。
 data:
-  dataset:
-    type: cmrc2018
-    root: ../dataset/QA/SFT/CMRC2018/tiny_cmrc2018
-    splits:
-      train: tiny_cmrc2018_train.jsonl
-      valid: tiny_cmrc2018_val.jsonl
-      test: tiny_cmrc2018_test.jsonl
-    params: {}
+    dataset:
+      type: cmrc2018
+      root: ../dataset/QA/SFT/CMRC2018/full_cmrc2018
+      splits:
+        train: full_cmrc2018_train.jsonl
+        valid: full_cmrc2018_valid.jsonl
+        test: full_cmrc2018_test.jsonl
+      params: {}
 
-  collator:
-    type: qa_span
-
-  loaders:
-    train:
-      batch_size: 8
-      shuffle: true
-      num_workers: 0
-      pin_memory: false
-      drop_last: false
-    valid:
-      batch_size: 8
-      shuffle: false
-      num_workers: 0
-      pin_memory: false
-      drop_last: false
-    test:
-      batch_size: 8
-      shuffle: false
-      num_workers: 0
-      pin_memory: false
-      drop_last: false
+    loaders:
+      train:
+        batch_size: 8
+        shuffle: true
+        num_workers: 0
+        pin_memory: false
+        drop_last: false
+      valid:
+        batch_size: 8
+        shuffle: false
+        num_workers: 0
+        pin_memory: false
+        drop_last: false
+      test:
+        batch_size: 8
+        shuffle: false
+        num_workers: 0
+        pin_memory: false
+        drop_last: false
 
 optimization:
   optimizer:
     type: adamw
     params:
-      lr: 0.001
+      lr: 1.0e-4
       weight_decay: 0.01
       betas: [0.9, 0.999]
       eps: 1.0e-8
 
   scheduler:
-    type: step_lr
+    type: warmup
     interval: step
     params:
-      step_size: 1000
-      gamma: 0.1
-      last_epoch: -1
+      warmup_steps: 1000
+      base_scheduler_type: steplr
+      base_scheduler_params:
+        step_size: 10000
+        gamma: 0.5
 
   loop:
     total_steps: 50000
@@ -130,6 +127,6 @@ evaluation:
 
 runtime:
   device:
-    type: cpu
+    type: cuda
     index: null
     count: 1

@@ -46,6 +46,11 @@ class Trainer:
         else:
             self.logger.info(message)
 
+    def _get_current_lr(self):
+        if self.scheduler is not None:
+            return self.scheduler.get_last_lr()[0]
+        return self.optimizer.param_groups[0]["lr"]
+
     def _train_dry_run(self, batch):
         if not isinstance(batch, dict):
             raise ValueError(f"传入的batch必须为dict类型的喵! 现在的type: {type(batch)}")
@@ -419,18 +424,18 @@ class Trainer:
         return summary_dict
 
 
-    def fit(self, train_dataloader, total_iters, log_every_iters=100, accumulation_steps=1, valid_dataloader=None, do_validation=False, valid_every_iters=None, early_stop_patience=None, validation_rounds_before_save_ckpt=None, checkpoints_dir = None ):
+    def fit(self, train_dataloader, total_steps, log_every_steps=100, accumulation_steps=1, valid_dataloader=None, validation_enabled=False, validation_every_steps=None, early_stopping_patience=None, checkpoint_save_every_rounds=None, checkpoints_dir = None ):
         """
         fit方法负责不断从dataloader中取出数据，并调用train_step方法
         :param train_dataloader: 训练数据加载器
-        :param total_iters: 需要完成的总迭代次数
-        :param log_every_iters: 每隔多少个iter打印一次日志
+        :param total_steps: 需要完成的总迭代次数
+        :param log_every_steps: 每隔多少个iter打印一次日志
         :param accumulation_steps: 梯度积累
         :param valid_dataloader: 验证数据加载器
-        :param do_validation: 是否进行验证
-        :param valid_every_iters: 每隔多少步验证一次
-        :param early_stop_patience: 早停的patience
-        :param validation_rounds_before_save_ckpt: 每验证多少轮保存一次检查点
+        :param validation_enabled: 是否进行验证
+        :param validation_every_steps: 每隔多少步验证一次
+        :param early_stopping_patience: 早停的patience
+        :param checkpoint_save_every_rounds: 每验证多少轮保存一次检查点
         :param checkpoints_dir: ckpt检查点保存路径
         :return: summary_dict = {
                             "completed_iters": self.global_step,
@@ -443,30 +448,30 @@ class Trainer:
                             "best_validation_loss": self.best_validation_loss,
                             "validation_rounds_without_improvement": self.validation_rounds_without_improvement,
                             "early_stopped": early_stopped,
-                            "validation_rounds_before_save_ckpt": validation_rounds_before_save_ckpt,
+                            "checkpoint_save_every_rounds": checkpoint_save_every_rounds,
                         }
         """
-        if not type(total_iters) is int or total_iters <= 0:
-            raise ValueError(f"total_iters必须为大于0的整数喵! 现在是: {total_iters}")
-        if not type(log_every_iters) is int or log_every_iters <= 0:
-            raise ValueError(f"log_every_iters必须为大于0的整数喵! 现在是: {log_every_iters}")
+        if not type(total_steps) is int or total_steps <= 0:
+            raise ValueError(f"total_steps必须为大于0的整数喵! 现在是: {total_steps}")
+        if not type(log_every_steps) is int or log_every_steps <= 0:
+            raise ValueError(f"log_every_steps必须为大于0的整数喵! 现在是: {log_every_steps}")
         if not type(accumulation_steps) is int or accumulation_steps <= 0:
             raise ValueError(f"accumulation_steps必须为大于0的整数喵! 现在是: {accumulation_steps}")
-        if not type(do_validation) is bool:
-            raise ValueError(f"do_validation必须为bool类型的喵! 现在的type: {type(do_validation)}")
-        if do_validation:
+        if not type(validation_enabled) is bool:
+            raise ValueError(f"validation_enabled必须为bool类型的喵! 现在的type: {type(validation_enabled)}")
+        if validation_enabled:
             if valid_dataloader is None:
-                raise ValueError(f"valid_dataloader在do_validation时不能为空喵!")
-            if not type(valid_every_iters) is int or valid_every_iters <= 0:
-                raise ValueError(f"valid_every_iters必须为正整数喵! 现在是: {valid_every_iters}")
-            if not type(early_stop_patience) is int or early_stop_patience <= 0:
-                raise ValueError(f"early_stop_patience必须为正整数喵! 现在是: {early_stop_patience}")
-        if checkpoints_dir is None and validation_rounds_before_save_ckpt is None:
+                raise ValueError(f"valid_dataloader在validation_enabled时不能为空喵!")
+            if not type(validation_every_steps) is int or validation_every_steps <= 0:
+                raise ValueError(f"validation_every_steps必须为正整数喵! 现在是: {validation_every_steps}")
+            if not type(early_stopping_patience) is int or early_stopping_patience <= 0:
+                raise ValueError(f"early_stopping_patience必须为正整数喵! 现在是: {early_stopping_patience}")
+        if checkpoints_dir is None and checkpoint_save_every_rounds is None:
             save_ckpt = False
-        elif checkpoints_dir is None and validation_rounds_before_save_ckpt is not None:
-                raise ValueError(f"checkpoints_dir 和 validation_rounds_before_save_ckpt 不能一个为空一个不为空喵!")
-        elif checkpoints_dir is not None and validation_rounds_before_save_ckpt is None:
-                raise ValueError(f"checkpoints_dir 和 validation_rounds_before_save_ckpt 不能一个为空一个不为空喵!")
+        elif checkpoints_dir is None and checkpoint_save_every_rounds is not None:
+                raise ValueError(f"checkpoints_dir 和 checkpoint_save_every_rounds 不能一个为空一个不为空喵!")
+        elif checkpoints_dir is not None and checkpoint_save_every_rounds is None:
+                raise ValueError(f"checkpoints_dir 和 checkpoint_save_every_rounds 不能一个为空一个不为空喵!")
         else:
             if not isinstance(checkpoints_dir, (str, pathlib.Path)):
                 raise ValueError(f"checkpoints_dir 必须为字符串类型或者pathlib.Path类型的喵! 现在的type: {type(checkpoints_dir)}")
@@ -478,8 +483,8 @@ class Trainer:
                 raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的路径不存在喵!")
             if not checkpoints_dir.is_dir():
                 raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的必须为目录喵!")
-            if not type(validation_rounds_before_save_ckpt) is int or validation_rounds_before_save_ckpt <= 0:
-                raise ValueError(f"validation_rounds_before_save_ckpt: {validation_rounds_before_save_ckpt} 必须为正整数喵!")
+            if not type(checkpoint_save_every_rounds) is int or checkpoint_save_every_rounds <= 0:
+                raise ValueError(f"checkpoint_save_every_rounds: {checkpoint_save_every_rounds} 必须为正整数喵!")
             save_ckpt = True
 
         reset_peak_memory_stats(self.device_summary)
@@ -508,7 +513,7 @@ class Trainer:
         self._train_dry_run(first_batch)
         self._log_info(f"Dry Run 已完成，以下是 Dry Run 显存占用的相关信息")
         self._log_memory_status()
-        while self.global_step < total_iters:
+        while self.global_step < total_steps:
             batch_exist = False
             batch_num = len(train_dataloader)
             if early_stopped:
@@ -584,11 +589,12 @@ class Trainer:
                     self.global_step += 1
                     accumulated_batches = 0
 
-                    should_validate = do_validation and (self.global_step % valid_every_iters == 0 or self.global_step >= total_iters)
+                    should_validate = validation_enabled and (self.global_step % validation_every_steps == 0 or self.global_step >= total_steps)
 
-                    if self.global_step % log_every_iters == 0:
-                        progress = self.global_step / total_iters * 100
-                        self._log_info(f"iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {interval_avg_loss:.6f}")
+                    if self.global_step % log_every_steps == 0:
+                        progress = self.global_step / total_steps * 100
+                        current_lr = self._get_current_lr()
+                        self._log_info(f"iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {interval_avg_loss:.6f}, lr: {current_lr:.6f}")
                         self._log_memory_status()
 
                     if should_validate:
@@ -598,6 +604,7 @@ class Trainer:
                             "global_step": self.global_step,
                             "avg_loss": avg_loss,
                             "interval_avg_loss": interval_avg_loss,
+                            "lr": self._get_current_lr(),
                         }
                         for loss_name, loss_info in losses_dict.items():
                             loss_raw_fieldname = f"{loss_name}_avg_raw"
@@ -647,16 +654,18 @@ class Trainer:
                                 )
                                 best_checkpoint_path = checkpoints_dir / "best.pt"
                                 save_checkpoint(state_dict, best_checkpoint_path)
-                                progress = self.global_step / total_iters * 100
-                                self._log_info(f"checkpoint: best.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}")
+                                progress = self.global_step / total_steps * 100
+                                current_lr = self._get_current_lr()
+                                self._log_info(f"checkpoint: best.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
                         else:
                             self.validation_rounds_without_improvement += 1
-                        if self.validation_rounds_without_improvement >= early_stop_patience:
+                        if self.validation_rounds_without_improvement >= early_stopping_patience:
                             early_stopped = True
-                            progress = self.global_step / total_iters * 100
-                            self._log_info(f"early_stopped, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}")
+                            progress = self.global_step / total_steps * 100
+                            current_lr = self._get_current_lr()
+                            self._log_info(f"early_stopped, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
 
-                        if save_ckpt and self.completed_validations % validation_rounds_before_save_ckpt == 0:
+                        if save_ckpt and self.completed_validations % checkpoint_save_every_rounds == 0:
                             state_dict = build_checkpoint(
                                 task=self.task,
                                 optimizer=self.optimizer,
@@ -665,10 +674,11 @@ class Trainer:
                             )
                             last_checkpoint_path = checkpoints_dir / "last.pt"
                             save_checkpoint(state_dict, last_checkpoint_path)
-                            progress = self.global_step / total_iters * 100
-                            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}")
+                            progress = self.global_step / total_steps * 100
+                            current_lr = self._get_current_lr()
+                            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr}")
 
-                if self.global_step >= total_iters:
+                if self.global_step >= total_steps:
                     break
                 if early_stopped:
                     break
@@ -676,12 +686,13 @@ class Trainer:
             if not batch_exist:
                 raise ValueError(f"训练出现异常喵! dataloader为空喵! ")
 
-        if not do_validation:
+        if not validation_enabled:
             last_train_metric_output = self.train_metric_collection.compute()
             train_metric_row = {
                 "global_step": self.global_step,
                 "avg_loss": avg_loss,
                 "interval_avg_loss": interval_avg_loss,
+                "lr": self._get_current_lr(),
             }
             for loss_name, loss_info in losses_dict.items():
                 loss_raw_fieldname = f"{loss_name}_avg_raw"
@@ -725,12 +736,14 @@ class Trainer:
             )
             last_checkpoint_path = checkpoints_dir / "last.pt"
             save_checkpoint(state_dict, last_checkpoint_path)
-            progress = self.global_step / total_iters * 100
-            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}")
+            progress = self.global_step / total_steps * 100
+            current_lr = self._get_current_lr()
+            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
 
-        if not self.global_step % log_every_iters == 0:
-            progress = self.global_step / total_iters * 100
-            self._log_info(f"iters: {self.global_step}/{total_iters} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}")
+        if not self.global_step % log_every_steps == 0:
+            progress = self.global_step / total_steps * 100
+            current_lr = self._get_current_lr()
+            self._log_info(f"iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
             self._log_memory_status()
 
         avg_losses_dict = {}

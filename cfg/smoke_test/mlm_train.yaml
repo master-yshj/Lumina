@@ -1,0 +1,92 @@
+# PARSE_REFACTOR_DEMO: Smoke Test 专用 MLM Train 配置。
+# 该文件只覆盖 Parse 的动态组件选择和规范化，不交给任何 Builder。
+version: 1
+experiment:
+  name: parse_smoke_mlm_train
+  seed: 42
+run:
+  resume_from: null
+task: mlmpretrain_train
+tokenizer:
+  type: example_tokenizer
+  params:
+    # PARSE_REFACTOR_DEMO: 按旧版 Parse 语义，相对路径以当前 YAML 目录为基准。
+    vocab_file_path: ../../tokenizer/bert_base_chinese_tokenizer/vocab.txt
+model:
+  type: tiny_bert_for_masked_lm
+  params: {}
+  init_from: null
+losses:
+  - name: mlm_cross_entropy
+    type: cross_entropy
+    weight: 1.0
+    params: {}
+data:
+  dataset:
+    type: tiny_zhwiki
+    # PARSE_REFACTOR_DEMO: 路径相对于 main/cfg/smoke_test/ 解析。
+    root: ../../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    splits:
+      train: tiny_zhwiki_train.jsonl
+      valid: tiny_zhwiki_val.jsonl
+      test: tiny_zhwiki_test.jsonl
+    params:
+      max_seq_length: 128
+      mlm_prob: 0.15
+  loaders:
+    train:
+      batch_size: 8
+      shuffle: true
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    valid:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    test:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+optimization:
+  optimizer:
+    type: adam_w
+    params:
+      lr: 0.001
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1.0e-8
+  scheduler:
+    type: step_lr
+    interval: step
+    params:
+      step_size: 1000
+      gamma: 0.1
+      last_epoch: -1
+  loop:
+    total_steps: 10000
+    accumulation_steps: 1
+    log_every_steps: 100
+  validation:
+    enabled: true
+evaluation:
+  test_after_train: false
+  metrics:
+    train:
+      - type: token_accuracy
+        params: {}
+    valid:
+      - type: token_accuracy
+        params: {}
+    test:
+      - type: token_accuracy
+        params: {}
+runtime:
+  device:
+    type: cpu
+    index: null
+    count: 1

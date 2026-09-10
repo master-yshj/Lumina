@@ -1,5 +1,5 @@
 # TinyBert MLM 预训练完整示例配置
-# 通用 Parser 根据 run.mode、task.type 和各组件 type 动态解码；
+# 通用 Parser 根据 task 和各组件 type 动态解码；
 # 本文件与 example_qa.yaml 共用顶层结构，
 # 仅 task/组件/数据/参数由 MLM 的具体 Spec 声明。
 
@@ -10,14 +10,11 @@ experiment:
   seed: 42
 
 run:
-  mode: train
   resume_from: null
 
-task:
-  type: mlm_pretrain
+task: mlmpretrain_train
 
-components:
-  tokenizer:
+tokenizer:
     type: exampletokenizer
     params:
       vocab_file_path: ../tokenizer/bert_base_chinese_tokenizer/vocab.txt
@@ -25,11 +22,12 @@ components:
       strip_accents: null
       max_input_chars_per_word: 100
 
-  model:
+model:
     type: tinybertformaskedlm
     params:
+      model_path: ../models/Transformer
       hidden_size: 128
-      max_position_embeddings: 128
+      max_position_embeddings: 768
       type_vocab_size: 2
       num_heads: 4
       intermediate_size: 512
@@ -40,7 +38,7 @@ components:
       layer_norm_eps: 1.0e-12
     init_from: null
 
-  losses:
+losses:
     - name: mlm_cross_entropy
       type: cross_entropy
       weight: 1.0
@@ -56,7 +54,7 @@ data:
       valid: tiny_zhwiki_val.jsonl
       test: tiny_zhwiki_test.jsonl
     params:
-      max_seq_length: 128
+      max_seq_length: 768
       mlm_prob: 0.15
 
   loaders:
@@ -83,18 +81,20 @@ optimization:
   optimizer:
     type: adamw
     params:
-      lr: 0.001
+      lr: 1.0e-4
       weight_decay: 0.01
       betas: [0.9, 0.999]
       eps: 1.0e-8
 
   scheduler:
-    type: step_lr
+    type: warmup
     interval: step
     params:
-      step_size: 1000
-      gamma: 0.1
-      last_epoch: -1
+      warmup_steps: 1000
+      base_scheduler_type: steplr
+      base_scheduler_params:
+        step_size: 10000
+        gamma: 0.5
 
   loop:
     total_steps: 10000
@@ -111,7 +111,7 @@ optimization:
       save_every_rounds: 1
 
 evaluation:
-  test_after_train: false
+  test_after_train: true
   metrics:
     train:
       - type: tokenaccuracy

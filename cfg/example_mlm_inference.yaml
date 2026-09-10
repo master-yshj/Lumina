@@ -7,11 +7,12 @@ version: 1
 experiment:
   name: TinyBert_MLM_PreTrain_Inference
 
+task: mlmpretrain_inference
+
 run:
-  mode: inference
   checkpoint:
-    path: ../experiments/TinyBert_MLM_PreTrain/checkpoints/best.pt
-    train_config: ../experiments/TinyBert_MLM_PreTrain/config/config.yaml
+    path: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/config/config.yaml
 
 inference:
   max_seq_length: 128

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 
 from parse.context import MISSING
 from parse.errors import ConfigError, MissingFieldError, NullNotAllowedError, TypeMismatchError, \
-    ParameterNormalizationError, UnknownFieldError, SchemaError, UnknownRegistryKeyError
+    ParameterNormalizationError, UnknownFieldError, SchemaError, UnknownRegistryKeyError, BootstrapError, BootstrapError
 
 
 @dataclass(frozen=True)
@@ -405,23 +405,47 @@ class PolymorphicSchema(SchemaNode):
             normalized_discriminator = normalized_value[self.discriminator]
         except KeyError as e:
             raise SchemaError(f"common_schema 不符合 PolymorphicSchema 契约喵! 找不到 discriminator 喵!")
+        selection = context.get_selection(path)
+        if selection.path != path:
+            raise BootstrapError(f"selection_path: {selection.path} 与当前path: {path} 不一致喵!")
+        if selection.category != self.category:
+            raise BootstrapError(f"selection_category: {selection.category} 与当前category: {self.category} 不一致喵!")
+        if selection.key != normalized_discriminator:
+            raise BootstrapError(f"selection_key: {selection.key} 与当前normalized_discriminator: {normalized_discriminator} 不一致喵!")
+        if selection.spec is None:
+            raise BootstrapError(f"selection_spec 不能为空喵!")
+        if not hasattr(selection.spec, "normalize_params"):
+            raise BootstrapError(f"selection_spec 必须提供normalize_params方法喵!")
+        if not hasattr(selection.spec, "key") or selection.spec.key != normalized_discriminator:
+            raise BootstrapError(
+                f"selection_spec.key: {getattr(selection.spec, 'key', None)} "
+                f"与normalized_discriminator: {normalized_discriminator} 不一致喵!"
+            )
         try:
             normalized_params = normalized_value[self.params_field]
         except KeyError:
             normalized_params = MISSING
-        if normalized_params is MISSING:
-            pass
-        else:
-            if normalized_params is None:
-                pass
-            else:
-                if not isinstance(normalized_params, Mapping):
-                    raise TypeMismatchError(
-                        f"path: {path.child(self.params_field)}: {normalized_params} "
-                        f"必须为None或者Mapping类型的喵! "
-                        f"现在的type: {type(normalized_params)}"
-                    )
-        return normalized_value
+        if normalized_params is not MISSING and normalized_params is not None:
+            if not isinstance(normalized_params, Mapping):
+                raise TypeMismatchError(
+                    f"path: {path.child(self.params_field)}: {normalized_params} "
+                    f"必须为None或者Mapping类型的喵! "
+                    f"现在的type: {type(normalized_params)}"
+                )
+        raw_params = None if normalized_params is MISSING else normalized_params
+        normalized_params = selection.spec.normalize_params(
+            raw_params=raw_params,
+            path=path.child(self.params_field),
+            context=context,
+        )
+        if not isinstance(normalized_params, Mapping):
+            raise SchemaError(
+                f"path: {path.child(self.params_field)} 的ComponentSpec.normalize_params() "
+                f"必须返回Mapping类型喵! 现在的type: {type(normalized_params)}"
+            )
+        result = deepcopy(normalized_value)
+        result[self.params_field] = deepcopy(normalized_params)
+        return result
 
 @dataclass(frozen=True)
 class PathSchema(SchemaNode):

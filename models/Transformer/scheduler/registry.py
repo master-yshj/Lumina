@@ -1,7 +1,8 @@
-from .scheduler import StepLR
+from .scheduler import StepLR, WarmupScheduler
 
 # SCHEDULER_REGISTRY = {
 #     "steplr": StepLR,
+#     "warmup": WarmupScheduler,
 # }
 #
 # SUPPORTED_SCHEDULERS = set(SCHEDULER_REGISTRY)
@@ -10,11 +11,14 @@ from registry.base import Registry
 
 canonical_map = {
     "steplr": StepLR,
+    "warmup": WarmupScheduler,
 }
 
 lookup_map = {
     "steplr": "steplr",
     "step_lr": "steplr",
+    "warmup": "warmup",
+    "warmup_scheduler": "warmup",
 }
 
 SCHEDULER_REGISTRY = Registry(

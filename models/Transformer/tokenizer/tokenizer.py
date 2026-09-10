@@ -522,12 +522,16 @@ class QATokenizer(ExampleTokenizer):
         for index,char in enumerate(text):
             unicode_type = unicodedata.category(char)
             if char in UNUSED_CHARS:
-                pass
+                # 该字符被删除，但为了不让 token 跨越 offset 空洞，
+                # 用一个空格占位作为分词边界；(0,0) 会在空白切分时被丢弃
+                clean_text.append(" ")
+                char_offsets.append((0, 0))
             elif char in EXCEPTION_CONTROL_CHARS:
                 clean_text.append(" ")
-                char_offsets += [(index, index+1)]
+                char_offsets += [(index, index + 1)]
             elif unicode_type == "Cc" or unicode_type == "Cf":
-                pass
+                clean_text.append(" ")
+                char_offsets.append((0, 0))
             elif unicode_type == "Zs":
                 clean_text.append(" ")
                 char_offsets += [(index, index + 1)]
@@ -647,7 +651,22 @@ class QATokenizer(ExampleTokenizer):
         final_token_offsets = []
         for token, token_offset in zip(token_list, token_offsets):
             if self.do_lower_case:
-                token = token.lower()
+                lowered_token = token.lower()
+                if len(lowered_token) != len(token):
+                    # 个别 Unicode 字符（如 U+0130 'İ'）lower 后变成 2 个字符，
+                    # 破坏 1字符:1offset 的不变量；此时逐字符 lower，
+                    # 长度膨胀的字符只保留首个非组合标记字符，保证长度不变
+                    rebuilt_chars = []
+                    for char in token:
+                        lowered_char = char.lower()
+                        if len(lowered_char) == 1:
+                            rebuilt_chars.append(lowered_char)
+                        else:
+                            kept = [c for c in lowered_char
+                                    if unicodedata.category(c) != "Mn"]
+                            rebuilt_chars.append(kept[0] if kept else lowered_char[0])
+                    lowered_token = "".join(rebuilt_chars)
+                token = lowered_token
             if self.strip_accents or (self.strip_accents is None and self.do_lower_case):
                 token = self._strip_accents(token)
             if len(token) != len(token_offset):
@@ -807,7 +826,7 @@ class QATokenizer(ExampleTokenizer):
         token_offsets = (char_offsets[0][0], char_offsets[-1][1])
         return token_offsets
 
-    def encode_with_offsets(self, text, add_special_tokens=True, truncation=False, padding=False, preserve_special_tokens=False, text_pair=None, max_length=None):
+    def encode_with_offsets(self, text, add_special_tokens=True, truncation=False, padding=False, preserve_special_tokens=False, text_pair=None, max_length=None, stride=None, return_overflowing=False):
         """
                 tokenizer的编码逻辑
                 :param text: str, 源文本
@@ -817,6 +836,8 @@ class QATokenizer(ExampleTokenizer):
                 :param preserve_special_tokens: 是否保护特殊token，即是否不把原始文本中的特殊token送入tokenize，bool
                 :param text_pair: None or str, 另一段文本
                 :param max_length: int, token最大长度
+                :param stride: int or None 滑动窗口切片覆盖的部分
+                :param return_overflowing: bool, 是否返回滑动窗口逻辑结果
                 :return: encoded_set, dict {
                     'input_ids': input_ids, token转化为id后的列表
                     'token_type_ids': token_type_ids, token来自于哪个句子
@@ -846,6 +867,86 @@ class QATokenizer(ExampleTokenizer):
             raise ValueError(f"说了要截断truncation就要告诉我多少才截断max_length喵！")
         if padding and (type(max_length) is not int or max_length <= 0):
             raise ValueError(f"如果要padding填充的话，max_length的值必须至少为正整数喵！")
+
+        # AI-CHANGE: 滑动窗口分支。return_overflowing=True 时把 text_pair 按
+        # token 切成多个 <=max_length 的窗口并返回并行列表；窗口内 question
+        # （token_a）固定携带、永不截断；offset 仍是 text_pair 的绝对字符位置。
+        if return_overflowing:
+            if not add_special_tokens:
+                raise ValueError("return_overflowing=True 时必须 add_special_tokens=True 喵!")
+            if type(max_length) is not int:
+                raise ValueError("return_overflowing=True 时必须提供 int 类型的 max_length 喵!")
+            if padding:
+                raise ValueError("return_overflowing=True 时不支持 padding，batch 内 padding 由 Collator 负责喵!")
+
+            special_tokens_count = 3          # [CLS] + [SEP] + [SEP]
+            if max_length < special_tokens_count + 1:
+                raise ValueError(f"max_length: {max_length} 太小喵!")
+
+            token_a, offsets_a = self.tokenize_with_offsets(text, preserve_special_tokens=preserve_special_tokens)
+            token_b, offsets_b = self.tokenize_with_offsets(text_pair, preserve_special_tokens=preserve_special_tokens)
+
+            # 每个窗口分给 context 的 token 容量 = 总预算 - question 固定占用
+            token_b_available_length = max_length - special_tokens_count - len(token_a)
+            if token_b_available_length < 1:
+                raise ValueError(f"question 过长: {len(token_a)} tokens，窗口内放不下任何 context 喵!")
+
+            # stride 是相邻窗口的重叠 token 数；滑动步长 = 容量 - 重叠
+            if stride is None:
+                stride = token_b_available_length // 2
+            if not type(stride) is int or stride < 0 or stride >= token_b_available_length:
+                raise ValueError(f"stride: {stride} 必须满足 0 <= stride < {token_b_available_length} 喵!")
+            step = token_b_available_length - stride
+
+            # 窗口起点：range 覆盖 + 尾部对齐，保证 token_b 末尾一定被覆盖
+            if len(token_b) <= token_b_available_length:
+                window_start_indices = [0]
+            else:
+                window_start_indices = list(range(0, len(token_b) - token_b_available_length + 1, step))
+                tail_start = len(token_b) - token_b_available_length
+                if window_start_indices[-1] != tail_start:
+                    window_start_indices.append(tail_start)
+
+            input_ids_list = []
+            token_type_ids_list = []
+            attention_mask_list = []
+            offset_mapping_list = []
+            window_end_token_indices = []
+
+            for window_start in window_start_indices:
+                window_end = window_start + token_b_available_length
+                b_slice   = token_b[window_start:window_end]
+                b_offsets = offsets_b[window_start:window_end]
+
+                # 组装公式与旧的单窗口路径完全一致
+                token_list            = [self.cls_token] + token_a + [self.sep_token] + b_slice + [self.sep_token]
+                # AI-CHANGE: 尾部 [SEP] 属于第二句，token_type_ids 的 1 段必须
+                # 多补 1 个；少算会导致窗口四个序列长度不一致(RuntimeError)。
+                window_token_type_ids = [0] * (len(token_a) + 2) + [1] * (len(b_slice) + 1)
+                window_offset_mapping = [(0,0)] + offsets_a + [(0,0)] + b_offsets + [(0,0)]
+                window_input_ids      = self.convert_tokens_to_ids(token_list)
+                window_attention_mask = [1] * len(window_input_ids)
+
+                if not (len(window_input_ids) == len(window_token_type_ids)
+                        == len(window_attention_mask) == len(window_offset_mapping)):
+                    raise RuntimeError("滑动窗口组装后四个序列长度不一致喵!")
+
+                input_ids_list.append(window_input_ids)
+                token_type_ids_list.append(window_token_type_ids)
+                attention_mask_list.append(window_attention_mask)
+                offset_mapping_list.append(window_offset_mapping)
+                window_end_token_indices.append(window_end)
+
+            return {
+                "input_ids_list": input_ids_list,
+                "token_type_ids_list": token_type_ids_list,
+                "attention_mask_list": attention_mask_list,
+                "offset_mapping_list": offset_mapping_list,
+                "window_start_token_indices": window_start_indices,
+                "window_end_token_indices": window_end_token_indices,
+                "window_count": len(input_ids_list),
+            }
+
         # 分词
         token_a,offsets_a = self.tokenize_with_offsets(text, preserve_special_tokens=preserve_special_tokens)
         if text_pair is not None:

@@ -7,8 +7,9 @@ version: 1
 experiment:
   name: TinyBert_QA_SFT_Test
 
+task: qasft_test
+
 run:
-  mode: test
   checkpoint:
     path: ../experiments/TinyBert_QA_SFT/checkpoints/best.pt
     train_config: ../experiments/TinyBert_QA_SFT/config/config.yaml

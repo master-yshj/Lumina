@@ -1,6 +1,9 @@
 from .tokenizer import (
                     ExampleTokenizer,
                     QATokenizer)
+from .tokenizer_copy import (
+                    ExampleTokenizer as ExampleTokenizerCopy,
+                    QATokenizer as QATokenizerCopy)
 
 # TOKENIZER_REGISTRY = {
 #     'exampletokenizer':ExampleTokenizer,

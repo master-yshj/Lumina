@@ -12,11 +12,35 @@ from models.Transformer.scheduler.registry import SCHEDULER_REGISTRY
 from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
 from models.Transformer.modeling.registry import MODEL_REGISTRY
 from models.Transformer.losses.registry import LOSS_REGISTRY
+from tasks.registry import TASK_BUILDER_REGISTRY
 from parse.errors import UnknownFieldError, TypeMismatchError
 from parse.schema.nodes import MappingSchema, SchemaNode, PathSchema, ScalarSchema
 from parse.specs.validator import ValidatorSpec
 from parse.schema.merge import merge_schema
-from tasks.registry import TASK_BUILDER_REGISTRY
+
+
+@dataclass(frozen=True)
+class BootstrapDescriptor:
+    path_pattern: tuple[str, ...]
+    category: str
+    required: bool = True
+
+    def __post_init__(self):
+        if not isinstance(self.path_pattern, tuple):
+            raise TypeError(f"path_pattern: {self.path_pattern} 必须为tuple类型的喵!")
+        if not self.path_pattern:
+            raise ValueError("path_pattern 不能为空喵!")
+        for part in self.path_pattern:
+            if not isinstance(part, str):
+                raise TypeError(f"path_pattern: {self.path_pattern} 中的元素必须为str类型喵!")
+            if not part.strip():
+                raise ValueError(f"path_pattern: {self.path_pattern} 中的元素不能为空喵!")
+        if not isinstance(self.category, str):
+            raise TypeError(f"category: {self.category} 必须为str类型喵!")
+        if not self.category.strip():
+            raise ValueError("category 不能为空喵!")
+        if not type(self.required) is bool:
+            raise TypeError(f"required: {self.required} 必须为bool类型喵!")
 
 
 @dataclass(frozen=True)
@@ -31,6 +55,7 @@ class ComponentSpec:
     validators: tuple[ValidatorSpec, ...]               # 表示该组件自己的参数或配置校验器
     factory: Callable | None                            # 表示由规范化参数构造真实运行组件的函数
     schema_contribution: SchemaNode | None              # 表示该组件对最终总 Schema 提供的额外 Schema 贡献
+    bootstrap_descriptors: tuple[Any, ...] = ()         # 表示Bootstrap阶段需要扫描的动态组件节点描述
 
     def __post_init__(self):
         if not isinstance(self.category, str):
@@ -86,6 +111,11 @@ class ComponentSpec:
             raise TypeError(f"factory: {self.factory} 必须为None或者可调用喵! 现在的type: {type(self.factory)}")
         if self.schema_contribution is not None and not isinstance(self.schema_contribution, SchemaNode):
             raise TypeError(f"schema_contribution: {self.schema_contribution} 必须为None或者SchemaNode类型的喵! 现在的type: {type(self.schema_contribution)}")
+        if not isinstance(self.bootstrap_descriptors, tuple):
+            raise TypeError(f"bootstrap_descriptors: {self.bootstrap_descriptors} 必须为tuple类型的喵! 现在的type: {type(self.bootstrap_descriptors)}")
+        for descriptor in self.bootstrap_descriptors:
+            if not hasattr(descriptor, "path_pattern") or not hasattr(descriptor, "category"):
+                raise TypeError(f"bootstrap_descriptors: {self.bootstrap_descriptors} 中的元素必须为BootstrapDescriptor类型的喵!")
         for field_name, default_value in self.default_params.items():
             field_schema = self.params_schema.fields[field_name]
 
@@ -258,6 +288,15 @@ TinyBertForQuestionAnswering_aliases = tuple(TinyBertForQuestionAnswering_aliase
 # TinyBertForMaskedLM_PARAMS_SCHEMA
 TinyBertForMaskedLM_PARAMS_SCHEMA = MappingSchema(
     fields={
+        # PARSE_REFACTOR_DEMO: 保留旧版 model_path 配置语义；该字段属于
+        # Model params，并由 PathSchema 转换为 pathlib.Path 后统一绝对化。
+        # 未在 YAML 中显式给出时回落到默认实现目录，避免 normalized 出现 MISSING
+        # 导致快照落盘失败。
+        "model_path": PathSchema(
+            base="config_dir",
+            kind="directory",
+            required=False,
+        ),
         "hidden_size": ScalarSchema(
             python_types=(int,),
             default=128,
@@ -306,6 +345,14 @@ TinyBertForMaskedLM_PARAMS_SCHEMA = MappingSchema(
 # TinyBertForQuestionAnswering_PARAMS_SCHEMA
 TinyBertForQuestionAnswering_PARAMS_SCHEMA = MappingSchema(
     fields={
+        # PARSE_REFACTOR_DEMO: QA Builder 与旧版配置同样读取 model_path，
+        # 因此两个 TinyBert Model Spec 必须保持一致的路径参数契约。
+        # 未显式给出时回落到默认实现目录，避免 normalized 出现 MISSING。
+        "model_path": PathSchema(
+            base="config_dir",
+            kind="directory",
+            required=False,
+        ),
         "hidden_size": ScalarSchema(
             python_types=(int,),
             default=128,
@@ -468,6 +515,12 @@ for alias, canonical_key in OPTIMIZER_LOOKUP_MAP.items():
 
 AdamW_aliases = tuple(AdamW_aliases)
 
+# PARSE_REFACTOR_DEMO: YAML 没有 tuple 类型，betas 从 YAML 读取为 list；
+# 规范化后转换为 tuple，以满足 AdamW 的参数契约。
+def _normalize_betas(value):
+    return tuple(value)
+
+
 AdamW_PARAMS_SCHEMA = MappingSchema(
     fields={
         "lr": ScalarSchema(
@@ -479,8 +532,9 @@ AdamW_PARAMS_SCHEMA = MappingSchema(
             default=0.01,
         ),
         "betas": ScalarSchema(
-            python_types=(tuple,),
+            python_types=(list, tuple),
             default=(0.9, 0.999),
+            normalizer=_normalize_betas,
         ),
         "eps": ScalarSchema(
             python_types=(float, int),
@@ -566,6 +620,57 @@ StepLR_SPEC = ComponentSpec(
     normalizers=(),
     validators=(),
     factory=StepLR,
+    schema_contribution=None,
+)
+
+WarmupScheduler = SCHEDULER_CANONICAL_MAP["warmup"]
+
+WarmupScheduler_aliases = []
+for alias, canonical_key in SCHEDULER_LOOKUP_MAP.items():
+    if canonical_key == "warmup":
+        WarmupScheduler_aliases.append(alias) if alias != "warmup" else None
+
+WarmupScheduler_aliases = tuple(WarmupScheduler_aliases)
+
+# WarmupScheduler_PARAMS_SCHEMA
+WarmupScheduler_PARAMS_SCHEMA = MappingSchema(
+    fields={
+        "warmup_steps": ScalarSchema(
+            python_types=(int,),
+            default=1000,
+        ),
+        "base_scheduler_type": ScalarSchema(
+            python_types=(str,),
+            default="steplr",
+        ),
+        "base_scheduler_params": ScalarSchema(
+            python_types=(dict,),
+            default={},
+        ),
+    },
+    allow_unknown=False,
+    allow_none=True,
+)
+
+WarmupScheduler_SPEC = ComponentSpec(
+    category="scheduler",
+    key="warmup",
+    aliases=WarmupScheduler_aliases,
+    params_schema=WarmupScheduler_PARAMS_SCHEMA,
+    default_params={
+        "warmup_steps": 1000,
+        "base_scheduler_type": "steplr",
+        "base_scheduler_params": {},
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(WarmupScheduler)
+        if callable(getattr(WarmupScheduler, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=WarmupScheduler,
     schema_contribution=None,
 )
 
@@ -731,9 +836,209 @@ TopKSamplingStrategy_SPEC = ComponentSpec(
 TASK_CANONICAL_MAP = TASK_BUILDER_REGISTRY.canonical_map
 TASK_LOOKUP_MAP = TASK_BUILDER_REGISTRY.lookup_map
 
-BUILD_MLM_PRETRAIN = TASK_CANONICAL_MAP["mlmpretrain_train"]
+BIULD_MLM_PRETRAIN = TASK_CANONICAL_MAP["mlmpretrain_train"]
 BUILD_MLM_TEST = TASK_CANONICAL_MAP["mlmpretrain_test"]
 BUILD_MLM_INFERENCE = TASK_CANONICAL_MAP["mlmpretrain_inference"]
-BUILD_QA_SFT = TASK_CANONICAL_MAP["qasft_test"]
+BUILD_QA_SFT = TASK_CANONICAL_MAP["qasft_train"]
 BUILD_QA_TEST = TASK_CANONICAL_MAP["qasft_test"]
 
+BIULD_MLM_PRETRAIN_aliases = []
+BUILD_MLM_TEST_aliases = []
+BUILD_MLM_INFERENCE_aliases = []
+BUILD_QA_SFT_aliases = []
+BUILD_QA_TEST_aliases = []
+
+for alias, canonical_key in TASK_LOOKUP_MAP.items():
+    if canonical_key == "mlmpretrain_train":
+        BIULD_MLM_PRETRAIN_aliases.append(alias) if alias != "mlmpretrain_train" else None
+    elif canonical_key == "mlmpretrain_test":
+        BUILD_MLM_TEST_aliases.append(alias) if alias != "mlmpretrain_test" else None
+    elif canonical_key == "mlmpretrain_inference":
+        BUILD_MLM_INFERENCE_aliases.append(alias) if alias != "mlmpretrain_inference" else None
+    elif canonical_key == "qasft_train":
+        BUILD_QA_SFT_aliases.append(alias) if alias != "qasft_train" else None
+    elif canonical_key == "qasft_test":
+        BUILD_QA_TEST_aliases.append(alias) if alias != "qasft_test" else None
+
+BIULD_MLM_PRETRAIN_aliases = tuple(BIULD_MLM_PRETRAIN_aliases)
+BUILD_MLM_TEST_aliases = tuple(BUILD_MLM_TEST_aliases)
+BUILD_MLM_INFERENCE_aliases = tuple(BUILD_MLM_INFERENCE_aliases)
+BUILD_QA_SFT_aliases = tuple(BUILD_QA_SFT_aliases)
+BUILD_QA_TEST_aliases = tuple(BUILD_QA_TEST_aliases)
+
+MLM_PRETRAIN_TRAIN_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("tokenizer",), "tokenizer"),
+    BootstrapDescriptor(("model",), "model"),
+    BootstrapDescriptor(("losses", "*"), "loss"),
+    BootstrapDescriptor(("optimization", "optimizer"), "optimizer"),
+    BootstrapDescriptor(("optimization", "scheduler"), "scheduler"),
+    BootstrapDescriptor(("evaluation", "metrics", "train", "*"), "metric"),
+    BootstrapDescriptor(("evaluation", "metrics", "valid", "*"), "metric"),
+    BootstrapDescriptor(("evaluation", "metrics", "test", "*"), "metric"),
+)
+
+MLM_PRETRAIN_TEST_BOOTSTRAP_DESCRIPTORS = (
+    # PARSE_REFACTOR_DEMO: Test YAML 可以声明 losses，因此 Bootstrap 必须
+    # 为每个 Loss 建立 ComponentSelection，供 PolymorphicSchema 使用。
+    BootstrapDescriptor(("losses", "*"), "loss", required=False),
+    BootstrapDescriptor(("evaluation", "metrics", "test", "*"), "metric"),
+)
+
+MLM_PRETRAIN_INFERENCE_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("inference", "decoding"), "decoding"),
+)
+
+QA_SFT_TRAIN_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("tokenizer",), "tokenizer"),
+    BootstrapDescriptor(("model",), "model"),
+    BootstrapDescriptor(("losses", "*"), "loss"),
+    BootstrapDescriptor(("optimization", "optimizer"), "optimizer"),
+    BootstrapDescriptor(("optimization", "scheduler"), "scheduler"),
+    BootstrapDescriptor(("evaluation", "metrics", "train", "*"), "metric"),
+    BootstrapDescriptor(("evaluation", "metrics", "valid", "*"), "metric"),
+    BootstrapDescriptor(("evaluation", "metrics", "test", "*"), "metric"),
+)
+
+QA_SFT_TEST_BOOTSTRAP_DESCRIPTORS = (
+    # PARSE_REFACTOR_DEMO: 与 MLM Test 一样，QA Test 的 Loss 可以由 Test
+    # 配置声明；未声明时由 checkpoint.train_config 提供。
+    BootstrapDescriptor(("losses", "*"), "loss", required=False),
+    BootstrapDescriptor(("evaluation", "metrics", "test", "*"), "metric"),
+)
+
+BIULD_MLM_PRETRAIN_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_MLM_TEST_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_MLM_INFERENCE_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_QA_SFT_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_QA_TEST_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_MLM_PRETRAIN_SPEC = ComponentSpec(
+    category="task",
+    key="mlmpretrain_train",
+    aliases=BIULD_MLM_PRETRAIN_aliases,
+    params_schema=BIULD_MLM_PRETRAIN_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BIULD_MLM_PRETRAIN)
+        if callable(getattr(BIULD_MLM_PRETRAIN, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BIULD_MLM_PRETRAIN,
+    schema_contribution=None,
+    bootstrap_descriptors=MLM_PRETRAIN_TRAIN_BOOTSTRAP_DESCRIPTORS,
+)
+
+BUILD_MLM_TEST_SPEC = ComponentSpec(
+    category="task",
+    key="mlmpretrain_test",
+    aliases=BUILD_MLM_TEST_aliases,
+    params_schema=BUILD_MLM_TEST_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_MLM_TEST)
+        if callable(getattr(BUILD_MLM_TEST, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_MLM_TEST,
+    schema_contribution=None,
+    bootstrap_descriptors=MLM_PRETRAIN_TEST_BOOTSTRAP_DESCRIPTORS,
+)
+
+BUILD_MLM_INFERENCE_SPEC = ComponentSpec(
+    category="task",
+    key="mlmpretrain_inference",
+    aliases=BUILD_MLM_INFERENCE_aliases,
+    params_schema=BUILD_MLM_INFERENCE_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_MLM_INFERENCE)
+        if callable(getattr(BUILD_MLM_INFERENCE, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_MLM_INFERENCE,
+    schema_contribution=None,
+    bootstrap_descriptors=MLM_PRETRAIN_INFERENCE_BOOTSTRAP_DESCRIPTORS,
+)
+
+# PARSE_REFACTOR_DEMO: QA inference 当前没有 Builder 和 Task Spec，不能把
+# qasft_inference 作为可运行 task 写入 Parse Registry。
+BUILD_QA_SFT_SPEC = ComponentSpec(
+    category="task",
+    key="qasft_train",
+    aliases=BUILD_QA_SFT_aliases,
+    params_schema=BUILD_QA_SFT_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_QA_SFT)
+        if callable(getattr(BUILD_QA_SFT, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_QA_SFT,
+    schema_contribution=None,
+    bootstrap_descriptors=QA_SFT_TRAIN_BOOTSTRAP_DESCRIPTORS,
+)
+
+BUILD_QA_TEST_SPEC = ComponentSpec(
+    category="task",
+    key="qasft_test",
+    aliases=BUILD_QA_TEST_aliases,
+    params_schema=BUILD_QA_TEST_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_QA_TEST)
+        if callable(getattr(BUILD_QA_TEST, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_QA_TEST,
+    schema_contribution=None,
+    bootstrap_descriptors=QA_SFT_TEST_BOOTSTRAP_DESCRIPTORS,
+)
