@@ -282,8 +282,11 @@ class QADataset(Dataset):
                     self._log_info(f"已读取到 {total_records} 条记录，有效记录为 {effective_records} 条")
         if effective_records == 0:
             raise ValueError(f"data_file_path {self.data_file_path} 指向的文件是空的喵！")
-        if not isinstance(self.split_name, str) or self.split_name not in ["train", "valid", "test"]:
-            raise ValueError(f"split_name: {self.split_name} 必须为 train, valid 或者 test 的字符串喵!")
+        # AI-CHANGE: split_name 允许 visualize(AI 编写, 待人工审查)。
+        # build_qa_samples 内仅用 split_name != "train" 区分训练与只读，
+        # visualize 与 test/valid 同走"每条答案只保留第一个命中窗口"分支。
+        if not isinstance(self.split_name, str) or self.split_name not in ["train", "valid", "test", "visualize"]:
+            raise ValueError(f"split_name: {self.split_name} 必须为 train, valid, test 或者 visualize 的字符串喵!")
         if not type(self.progress_interval) is int or self.progress_interval <= 0:
             raise ValueError(f"progress_interval: {self.progress_interval} 必须为正整数喵!")
 

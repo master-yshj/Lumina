@@ -13,6 +13,9 @@ from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
 from models.Transformer.modeling.registry import MODEL_REGISTRY
 from models.Transformer.losses.registry import LOSS_REGISTRY
 from tasks.registry import TASK_BUILDER_REGISTRY
+# AI-CHANGE: 可视化方法运行 Registry 接入(AI 编写, 待人工审查)。
+# 只引入方法级 Registry,不涉及任何任务 Builder,模型与数据集声明另行设计。
+from visualize.registry import VISUALIZER_REGISTRY
 from parse.errors import UnknownFieldError, TypeMismatchError
 from parse.schema.nodes import MappingSchema, SchemaNode, PathSchema, ScalarSchema
 from parse.specs.validator import ValidatorSpec
@@ -839,12 +842,17 @@ TASK_LOOKUP_MAP = TASK_BUILDER_REGISTRY.lookup_map
 BIULD_MLM_PRETRAIN = TASK_CANONICAL_MAP["mlmpretrain_train"]
 BUILD_MLM_TEST = TASK_CANONICAL_MAP["mlmpretrain_test"]
 BUILD_MLM_INFERENCE = TASK_CANONICAL_MAP["mlmpretrain_inference"]
+# AI-CHANGE: MLM 可视化任务 Builder(AI 编写, 待人工审查)。
+# 只组装 tokenizer/model/dataloader/visualizers,不组装损失与指标。
+BUILD_MLM_VISUALIZE = TASK_CANONICAL_MAP["mlmpretrain_visualize"]
 BUILD_QA_SFT = TASK_CANONICAL_MAP["qasft_train"]
 BUILD_QA_TEST = TASK_CANONICAL_MAP["qasft_test"]
 
 BIULD_MLM_PRETRAIN_aliases = []
 BUILD_MLM_TEST_aliases = []
 BUILD_MLM_INFERENCE_aliases = []
+# AI-CHANGE: MLM 可视化任务别名(AI 编写, 待人工审查)。
+BUILD_MLM_VISUALIZE_aliases = []
 BUILD_QA_SFT_aliases = []
 BUILD_QA_TEST_aliases = []
 
@@ -855,6 +863,8 @@ for alias, canonical_key in TASK_LOOKUP_MAP.items():
         BUILD_MLM_TEST_aliases.append(alias) if alias != "mlmpretrain_test" else None
     elif canonical_key == "mlmpretrain_inference":
         BUILD_MLM_INFERENCE_aliases.append(alias) if alias != "mlmpretrain_inference" else None
+    elif canonical_key == "mlmpretrain_visualize":
+        BUILD_MLM_VISUALIZE_aliases.append(alias) if alias != "mlmpretrain_visualize" else None
     elif canonical_key == "qasft_train":
         BUILD_QA_SFT_aliases.append(alias) if alias != "qasft_train" else None
     elif canonical_key == "qasft_test":
@@ -863,6 +873,8 @@ for alias, canonical_key in TASK_LOOKUP_MAP.items():
 BIULD_MLM_PRETRAIN_aliases = tuple(BIULD_MLM_PRETRAIN_aliases)
 BUILD_MLM_TEST_aliases = tuple(BUILD_MLM_TEST_aliases)
 BUILD_MLM_INFERENCE_aliases = tuple(BUILD_MLM_INFERENCE_aliases)
+# AI-CHANGE: MLM 可视化任务别名(AI 编写, 待人工审查)。
+BUILD_MLM_VISUALIZE_aliases = tuple(BUILD_MLM_VISUALIZE_aliases)
 BUILD_QA_SFT_aliases = tuple(BUILD_QA_SFT_aliases)
 BUILD_QA_TEST_aliases = tuple(BUILD_QA_TEST_aliases)
 
@@ -931,6 +943,14 @@ BUILD_QA_SFT_PARAMS_SCHEMA = MappingSchema(
 )
 
 BUILD_QA_TEST_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+# AI-CHANGE: MLM 可视化任务 Params Schema(AI 编写, 待人工审查)。
+# 任务级 params 为空占位,方法级 params 由各 visualizer Spec 负责。
+BUILD_MLM_VISUALIZE_PARAMS_SCHEMA = MappingSchema(
     fields={},
     allow_unknown=True,
     allow_none=False,
@@ -1041,4 +1061,90 @@ BUILD_QA_TEST_SPEC = ComponentSpec(
     factory=BUILD_QA_TEST,
     schema_contribution=None,
     bootstrap_descriptors=QA_SFT_TEST_BOOTSTRAP_DESCRIPTORS,
+)
+
+# AI-CHANGE: MLM 可视化任务 Bootstrap 描述符(AI 编写, 待人工审查)。
+# 只扫描 visualize.methods.* 方法节点,不扫描 tokenizer/model/losses；
+# 模型结构从 checkpoint.train_config 恢复,数据集走 data/dataset 静态声明。
+MLM_PRETRAIN_VISUALIZE_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("visualize", "methods", "*"), "visualizer"),
+)
+
+# AI-CHANGE: MLM 可视化任务 Spec(AI 编写, 待人工审查)。
+BUILD_MLM_VISUALIZE_SPEC = ComponentSpec(
+    category="task",
+    key="mlmpretrain_visualize",
+    aliases=BUILD_MLM_VISUALIZE_aliases,
+    params_schema=BUILD_MLM_VISUALIZE_PARAMS_SCHEMA,
+    default_params={
+
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_MLM_VISUALIZE)
+        if callable(getattr(BUILD_MLM_VISUALIZE, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_MLM_VISUALIZE,
+    schema_contribution=None,
+    bootstrap_descriptors=MLM_PRETRAIN_VISUALIZE_BOOTSTRAP_DESCRIPTORS,
+)
+
+# VISUALIZE
+# AI-CHANGE: 可视化方法 Spec(AI 编写, 待人工审查)。
+# 只覆盖方法级组件(layer/head/max_samples),不包含模型、数据集与任务 Builder
+# 的声明；任务级 Spec 待模型与数据集契约确定后再补充。
+VISUALIZER_CANONICAL_MAP = VISUALIZER_REGISTRY.canonical_map
+VISUALIZER_LOOKUP_MAP = VISUALIZER_REGISTRY.lookup_map
+
+AttentionHeatmapVisualizer = VISUALIZER_CANONICAL_MAP["attentionheatmap"]
+
+AttentionHeatmapVisualizer_aliases = []
+for alias, canonical_key in VISUALIZER_LOOKUP_MAP.items():
+    if canonical_key == "attentionheatmap":
+        AttentionHeatmapVisualizer_aliases.append(alias) if alias != "attentionheatmap" else None
+AttentionHeatmapVisualizer_aliases = tuple(AttentionHeatmapVisualizer_aliases)
+
+# ATTENTION_HEATMAP_PARAMS_SCHEMA
+ATTENTION_HEATMAP_PARAMS_SCHEMA = MappingSchema(
+    fields={
+        "layer": ScalarSchema(
+            python_types=(int, str, list),
+            default=-1,
+        ),
+        "head": ScalarSchema(
+            python_types=(int, str, list),
+            default=0,
+        ),
+        "max_samples": ScalarSchema(
+            python_types=(int,),
+            default=5,
+        ),
+    },
+    allow_unknown=False,
+    allow_none=False,
+)
+
+ATTENTION_HEATMAP_SPEC = ComponentSpec(
+    category="visualizer",
+    key="attentionheatmap",
+    aliases=AttentionHeatmapVisualizer_aliases,
+    params_schema=ATTENTION_HEATMAP_PARAMS_SCHEMA,
+    default_params={
+        "layer": -1,
+        "head": 0,
+        "max_samples": 5,
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(AttentionHeatmapVisualizer)
+        if callable(getattr(AttentionHeatmapVisualizer, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=AttentionHeatmapVisualizer,
+    schema_contribution=None,
 )

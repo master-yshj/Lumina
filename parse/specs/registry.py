@@ -3,7 +3,7 @@ from parse.specs.component import EXAMPLE_TOKENIZER_SPEC, QA_TOKENIZER_SPEC, Tin
     TinyBertForQuestionAnswering_SPEC, CrossEntropyLoss_SPEC, AdamW_SPEC, StepLR, StepLR_SPEC, \
     WarmupScheduler, WarmupScheduler_SPEC, TokenAccuracy_SPEC, \
     ExactMatch_SPEC, CharacterF1_SPEC, TopKSamplingStrategy_SPEC, BUILD_MLM_PRETRAIN_SPEC, BUILD_MLM_TEST_SPEC, \
-    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC
+    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC, BUILD_MLM_VISUALIZE_SPEC, ATTENTION_HEATMAP_SPEC
 
 TOKENIZER_SPEC_CANONICAL_MAP = {
     'exampletokenizer': EXAMPLE_TOKENIZER_SPEC,
@@ -56,11 +56,29 @@ TASK_SPEC_CANONICAL_MAP = {
     "mlmpretrain_train": BUILD_MLM_PRETRAIN_SPEC, "mlmpretrain_test": BUILD_MLM_TEST_SPEC,
     "mlmpretrain_inference": BUILD_MLM_INFERENCE_SPEC, "qasft_train": BUILD_QA_SFT_SPEC,
     "qasft_test": BUILD_QA_TEST_SPEC,
+    # AI-CHANGE: MLM 可视化任务 Spec(AI 编写, 待人工审查)。
+    "mlmpretrain_visualize": BUILD_MLM_VISUALIZE_SPEC,
 }
 TASK_SPEC_LOOKUP_MAP = {
     "mlmpretrain_train": "mlmpretrain_train", "mlmpretrain_test": "mlmpretrain_test",
     "mlmpretrain_inference": "mlmpretrain_inference", "qasft_train": "qasft_train", "qasft_test": "qasft_test",
+    # AI-CHANGE: MLM 可视化任务 Spec 别名(AI 编写, 待人工审查)。
+    "mlmpretrain_visualize": "mlmpretrain_visualize",
     "mlm_pretrain_train": "mlmpretrain_train", "mlm_pretrain_test": "mlmpretrain_test",
     "mlm_pretrain_inference": "mlmpretrain_inference", "qa_sft_train": "qasft_train", "qa_sft_test": "qasft_test",
+    # AI-CHANGE: MLM 可视化任务 Spec 别名(AI 编写, 待人工审查)。
+    "mlm_pretrain_visualize": "mlmpretrain_visualize",
 }
 TASK_SPEC_REGISTRY = Registry(category="task", canonical_map=TASK_SPEC_CANONICAL_MAP, lookup_map=TASK_SPEC_LOOKUP_MAP)
+
+# AI-CHANGE: 可视化方法 Spec Registry(AI 编写, 待人工审查)。
+# canonical key 与 aliases 与运行侧 visualize/registry.py 保持一致；
+# 任务级 visualize Spec 待模型与数据集契约确定后再补充。
+VISUALIZER_SPEC_CANONICAL_MAP = {
+    "attentionheatmap": ATTENTION_HEATMAP_SPEC,
+}
+VISUALIZER_SPEC_LOOKUP_MAP = {
+    "attentionheatmap": "attentionheatmap",
+    "attention_heatmap": "attentionheatmap",
+}
+VISUALIZER_SPEC_REGISTRY = Registry(category="visualizer", canonical_map=VISUALIZER_SPEC_CANONICAL_MAP, lookup_map=VISUALIZER_SPEC_LOOKUP_MAP)

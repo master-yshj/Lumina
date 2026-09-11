@@ -138,8 +138,10 @@ class MLMDataset(Dataset):
             raise ValueError(f"data_file_path {self.data_file_path} 指向的文件是空的喵！")
         if not type(max_seq_length) is int or max_seq_length <= 2:
             raise ValueError(f"max_seq_length必须为大于2的整数喵！当前为: {max_seq_length}")
-        if not isinstance(self.split_name, str) or self.split_name not in ["train", "valid", "test"]:
-            raise ValueError(f"split_name: {self.split_name} 必须为 train, valid 或者 test 的字符串喵!")
+        # AI-CHANGE: split_name 允许 visualize(AI 编写, 待人工审查)。
+        # visualize 与 test 同为只读前向，不参与训练；仅影响日志文案。
+        if not isinstance(self.split_name, str) or self.split_name not in ["train", "valid", "test", "visualize"]:
+            raise ValueError(f"split_name: {self.split_name} 必须为 train, valid, test 或者 visualize 的字符串喵!")
         if not type(self.progress_interval) is int or self.progress_interval <= 0:
             raise ValueError(f"progress_interval: {self.progress_interval} 必须为正整数喵!")
 

@@ -28,6 +28,9 @@ def _load_registries():
     from models.Transformer.scheduler.registry import SCHEDULER_REGISTRY
     from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
     from tasks.registry import TASK_BUILDER_REGISTRY
+    # AI-CHANGE: 可视化方法运行 Registry 接入(AI 编写, 待人工审查)。
+    # 只装配方法级 Registry,不涉及任务 Builder；模型与数据集契约另行设计。
+    from visualize.registry import VISUALIZER_REGISTRY
 
     return {
         "task": TASK_BUILDER_REGISTRY,
@@ -38,6 +41,7 @@ def _load_registries():
         "scheduler": SCHEDULER_REGISTRY,
         "metric": METRIC_REGISTRY,
         "decoding": DECODING_REGISTRY,
+        "visualizer": VISUALIZER_REGISTRY,
     }
 
 
@@ -54,6 +58,7 @@ def _load_spec_registries():
         SCHEDULER_SPEC_REGISTRY,
         TASK_SPEC_REGISTRY,
         TOKENIZER_SPEC_REGISTRY,
+        VISUALIZER_SPEC_REGISTRY,
     )
 
     return {
@@ -65,6 +70,9 @@ def _load_spec_registries():
         "scheduler": SCHEDULER_SPEC_REGISTRY,
         "metric": METRICS_SPEC_REGISTRY,
         "decoding": DECODING_SPEC_REGISTRY,
+        # AI-CHANGE: 可视化方法 Spec Registry 接入(AI 编写, 待人工审查)。
+        # 与运行侧 visualizer 类别对应；任务级 visualize Spec 待补充。
+        "visualizer": VISUALIZER_SPEC_REGISTRY,
     }
 
 

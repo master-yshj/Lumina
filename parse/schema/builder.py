@@ -72,8 +72,11 @@ def _dataset_schema(task_key):
     # PARSE_REFACTOR_DEMO: Dataset type 是任务约束字段，不是 Registry 判别字段。
     # split 的必填性由 task mode 决定：Train 必须提供 train，Test 必须提供
     # test；其余 split 可以省略，不能让 Test 配置被迫声明训练数据。
+    # AI-CHANGE: 可视化任务使用独立 visualize split(AI 编写, 待人工审查)。
+    # visualize 只读 visualize 数据做前向，不复用 train/valid/test。
     is_train_task = task_key.endswith("_train")
     is_test_task = task_key.endswith("_test")
+    is_visualize_task = task_key.endswith("_visualize")
     return MappingSchema(
         fields={
             "type": EnumSchema(choices=dataset_choices, required=True),
@@ -83,6 +86,7 @@ def _dataset_schema(task_key):
                     "train": _path_value_schema(required=is_train_task),
                     "valid": _path_value_schema(required=False),
                     "test": _path_value_schema(required=is_test_task),
+                    "visualize": _path_value_schema(required=is_visualize_task),
                 },
                 allow_unknown=False,
                 allow_none=False,
@@ -111,6 +115,11 @@ def _runtime_schema():
         allow_unknown=False,
         allow_none=False,
     )
+
+
+# AI-CHANGE: 可视化方法区 Schema 说明(AI 编写, 待人工审查)。
+# visualize.methods 走 visualizer 多态外壳，具体 params 由各方法 Spec 细化；
+# 组装逻辑见 build_schema 内的 visualize_schema，任务分支见 _visualize 分支。
 
 
 def build_schema(context, registries):
@@ -154,6 +163,16 @@ def build_schema(context, registries):
     )
     metric_schema = _polymorphic_schema("metric", registries["metric"])
     decoding_schema = _polymorphic_schema("decoding", registries["decoding"])
+    # AI-CHANGE: 可视化方法区 Schema 接入(AI 编写, 待人工审查)。
+    # visualize.methods 走 visualizer 多态外壳，具体 params 由各方法 Spec 细化。
+    visualizer_schema = _polymorphic_schema("visualizer", registries["visualizer"])
+    visualize_schema = MappingSchema(
+        fields={
+            "methods": SequenceSchema(item_schema=visualizer_schema, min_items=1, required=True),
+        },
+        allow_unknown=False,
+        allow_none=False,
+    )
 
     common_fields = {
         "version": ScalarSchema(python_types=(int,), required=True),
@@ -259,6 +278,27 @@ def build_schema(context, registries):
             allow_unknown=False,
             allow_none=False,
         )
+    elif task_key.endswith("_visualize"):
+        # AI-CHANGE: 可视化任务 Schema 分支(AI 编写, 待人工审查)。
+        # data.splits.visualize 必填(独立 20 条抽样子集),loaders 读 visualize 键；
+        # visualize.methods 走 visualizer 多态外壳；不要 losses/evaluation。
+        common_fields.update({
+            "data": MappingSchema(
+                fields={
+                    "dataset": _dataset_schema(task_key),
+                    "loaders": MappingSchema(
+                        fields={
+                            "visualize": _plain_mapping_schema(),
+                        },
+                        allow_unknown=False,
+                        allow_none=False,
+                    ),
+                },
+                allow_unknown=False,
+                allow_none=False,
+            ),
+            "visualize": visualize_schema,
+        })
     else:
         raise ValueError(f"task_key: {task_key} 暂无Schema构建规则喵!")
 

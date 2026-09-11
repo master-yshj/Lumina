@@ -248,4 +248,6 @@ def create_visualize_directories(experiment_dir, visualize_methods):
         if not single_dir.exists():
             os.makedirs(single_dir)
         directories[visualize_method] = single_dir
+    directories["visualize_log_dir"] = visualize_dir / "logs"
+    directories["visualize_log_path"] = visualize_dir / "visualize.log"
     return directories

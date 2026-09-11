@@ -1,0 +1,49 @@
+# MLM 可视化示例配置
+# AI-CHANGE: 可视化 YAML 示例(AI 编写, 待人工审查)。
+# 结构照 Test 裁剪：run.checkpoint 只用 path 指定 pt 文件，
+# train_config 恢复模型结构；data 用 splits.visualize 独立子集；
+# loaders 读 visualize 键；不要 losses/evaluation/optimization。
+
+version: 1
+
+experiment:
+  name: TinyBert_MLM_PreTrain_Visualize
+
+task: mlmpretrain_visualize
+
+run:
+  checkpoint:
+    path: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/config/config.yaml
+
+data:
+  dataset:
+    type: tiny_zhwiki
+    root: ../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    splits:
+      visualize: tiny_zhwiki_visualize.jsonl
+    params:
+      max_seq_length: 128
+      mlm_prob: 0.15
+
+  loaders:
+    visualize:
+      batch_size: 8
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+
+visualize:
+  methods:
+    - type: attention_heatmap
+      params:
+        layer: all
+        head: all
+        max_samples: 2
+
+runtime:
+  device:
+    type: cuda
+    index: null
+    count: 1
