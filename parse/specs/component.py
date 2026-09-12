@@ -16,8 +16,9 @@ from tasks.registry import TASK_BUILDER_REGISTRY
 # AI-CHANGE: 可视化方法运行 Registry 接入(AI 编写, 待人工审查)。
 # 只引入方法级 Registry,不涉及任何任务 Builder,模型与数据集声明另行设计。
 from visualize.registry import VISUALIZER_REGISTRY
+from visualize.methods.loss_landscape import LossLandscapeVisualizer
 from parse.errors import UnknownFieldError, TypeMismatchError
-from parse.schema.nodes import MappingSchema, SchemaNode, PathSchema, ScalarSchema
+from parse.schema.nodes import MappingSchema, SchemaNode, PathSchema, ScalarSchema, EnumSchema, SequenceSchema, RegistryKeySchema, PolymorphicSchema
 from parse.specs.validator import ValidatorSpec
 from parse.schema.merge import merge_schema
 
@@ -1068,6 +1069,11 @@ BUILD_QA_TEST_SPEC = ComponentSpec(
 # 模型结构从 checkpoint.train_config 恢复,数据集走 data/dataset 静态声明。
 MLM_PRETRAIN_VISUALIZE_BOOTSTRAP_DESCRIPTORS = (
     BootstrapDescriptor(("visualize", "methods", "*"), "visualizer"),
+    BootstrapDescriptor(
+        ("visualize", "methods", "*", "params", "losses", "*"),
+        "loss",
+        required=False,
+    ),
 )
 
 # AI-CHANGE: MLM 可视化任务 Spec(AI 编写, 待人工审查)。
@@ -1125,6 +1131,88 @@ ATTENTION_HEATMAP_PARAMS_SCHEMA = MappingSchema(
     },
     allow_unknown=False,
     allow_none=False,
+)
+
+LOSS_LANDSCAPE_PARAMS_SCHEMA = MappingSchema(
+    fields={
+        "normalization": EnumSchema(
+            choices={
+                "per_parameter": "per_parameter",
+                "global": "global",
+            },
+            default="per_parameter",
+        ),
+        "output_format": EnumSchema(
+            choices={
+                "png": "png",
+                "html": "html",
+                "both": "both",
+            },
+            default="both",
+        ),
+        "grid_size": ScalarSchema(python_types=(int,), default=11),
+        "alpha_min": ScalarSchema(python_types=(int, float), default=-1.0),
+        "alpha_max": ScalarSchema(python_types=(int, float), default=1.0),
+        "beta_min": ScalarSchema(python_types=(int, float), default=-1.0),
+        "beta_max": ScalarSchema(python_types=(int, float), default=1.0),
+        "batch_count": ScalarSchema(python_types=(int,), default=1),
+        "losses": SequenceSchema(
+            item_schema=PolymorphicSchema(
+                category="loss",
+                common_schema=MappingSchema(
+                    fields={
+                        "name": ScalarSchema(python_types=(str,), required=True),
+                        "type": RegistryKeySchema(registry=LOSS_REGISTRY),
+                        "weight": ScalarSchema(python_types=(int, float), default=1.0),
+                        "params": MappingSchema(
+                            fields={},
+                            allow_unknown=True,
+                            allow_none=True,
+                        ),
+                    },
+                    allow_unknown=False,
+                    allow_none=False,
+                ),
+            ),
+            min_items=1,
+            required=True,
+        ),
+    },
+    allow_unknown=False,
+    allow_none=False,
+)
+
+LossLandscapeVisualizer_aliases = []
+for alias, canonical_key in VISUALIZER_LOOKUP_MAP.items():
+    if canonical_key == "losslandscape":
+        LossLandscapeVisualizer_aliases.append(alias) if alias != "losslandscape" else None
+LossLandscapeVisualizer_aliases = tuple(LossLandscapeVisualizer_aliases)
+
+LOSS_LANDSCAPE_SPEC = ComponentSpec(
+    category="visualizer",
+    key="losslandscape",
+    aliases=LossLandscapeVisualizer_aliases,
+    params_schema=LOSS_LANDSCAPE_PARAMS_SCHEMA,
+    default_params={
+        "normalization": "per_parameter",
+        "output_format": "both",
+        "grid_size": 11,
+        "alpha_min": -1.0,
+        "alpha_max": 1.0,
+        "beta_min": -1.0,
+        "beta_max": 1.0,
+        "batch_count": 1,
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(LossLandscapeVisualizer)
+        if callable(getattr(LossLandscapeVisualizer, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=LossLandscapeVisualizer,
+    schema_contribution=None,
 )
 
 ATTENTION_HEATMAP_SPEC = ComponentSpec(

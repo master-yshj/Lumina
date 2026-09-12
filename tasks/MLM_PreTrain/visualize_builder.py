@@ -1,13 +1,11 @@
 from models.Transformer.tokenizer.registry import TOKENIZER_REGISTRY
 from models.Transformer.modeling.registry import MODEL_REGISTRY
+from models.Transformer.losses.registry import LOSS_REGISTRY
+from models.Transformer.losses.losses import WeightedLoss
 from tasks.MLM_PreTrain.mlm import MLMTask
 from loaders.mlm import MLMDataset, MLMCollator
 from visualize.registry import VISUALIZER_REGISTRY
 # AI-CHANGE: 可视化 Builder 内部装载权重(AI 编写, 待人工审查)。
-# 与 Tester/Inference 的 runner 职责划分不同：可视化 Builder 已经从
-# checkpoint.train_config 恢复了模型结构，权重路径来自同一份 run.checkpoint，
-# 因此在 Builder 内一次性完成"建结构 + 装权重"，入口不再重复读 checkpoint。
-from Trainer.checkpoint import load_checkpoint
 # 与 Tester/Inference 的 runner 职责划分不同：可视化 Builder 已经从
 # checkpoint.train_config 恢复了模型结构，权重路径来自同一份 run.checkpoint，
 # 因此在 Builder 内一次性完成"建结构 + 装权重"，入口不再重复读 checkpoint。
@@ -185,6 +183,27 @@ def build_mlm_visualize(config_dict, logger=None):
             method_params = {}
         if not isinstance(method_params, dict):
             raise ValueError(f"method_params 必须为dict类型的喵! 现在的type: {type(method_params)}")
+        method_params = dict(method_params)
+        losses_config = method_params.pop("losses", None)
+        if losses_config is not None:
+            if not isinstance(losses_config, list) or not losses_config:
+                raise ValueError("method_params['losses'] 必须为非空list类型的喵!")
+            loss_list = []
+            for loss_config in losses_config:
+                if not isinstance(loss_config, dict):
+                    raise TypeError("loss_config 必须为dict类型的喵!")
+                loss_name = loss_config["name"]
+                loss_type = loss_config["type"]
+                loss_weight = loss_config["weight"]
+                loss_params = loss_config.get("params") or {}
+                loss_key = LOSS_REGISTRY.resolve_key(loss_type)
+                loss_class = LOSS_REGISTRY.get(loss_key)
+                loss_list.append({
+                    "name": loss_name,
+                    "loss_fn": loss_class(**loss_params),
+                    "weight": loss_weight,
+                })
+            method_params["loss_fn"] = WeightedLoss(loss_list)
         visualizer = visualizer_class(**method_params)
         visualizers.append(visualizer)
         visualizer_names.append(canonical_key)

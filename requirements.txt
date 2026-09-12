@@ -3,4 +3,5 @@ numpy==2.3.5
 PyYAML==6.0.3
 tqdm==4.67.1
 matplotlib==3.10.8
+plotly==7.0.0
 pytest==9.0.2

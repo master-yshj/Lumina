@@ -3,7 +3,7 @@ from parse.specs.component import EXAMPLE_TOKENIZER_SPEC, QA_TOKENIZER_SPEC, Tin
     TinyBertForQuestionAnswering_SPEC, CrossEntropyLoss_SPEC, AdamW_SPEC, StepLR, StepLR_SPEC, \
     WarmupScheduler, WarmupScheduler_SPEC, TokenAccuracy_SPEC, \
     ExactMatch_SPEC, CharacterF1_SPEC, TopKSamplingStrategy_SPEC, BUILD_MLM_PRETRAIN_SPEC, BUILD_MLM_TEST_SPEC, \
-    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC, BUILD_MLM_VISUALIZE_SPEC, ATTENTION_HEATMAP_SPEC
+    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC, BUILD_MLM_VISUALIZE_SPEC, ATTENTION_HEATMAP_SPEC, LOSS_LANDSCAPE_SPEC
 
 TOKENIZER_SPEC_CANONICAL_MAP = {
     'exampletokenizer': EXAMPLE_TOKENIZER_SPEC,
@@ -76,9 +76,12 @@ TASK_SPEC_REGISTRY = Registry(category="task", canonical_map=TASK_SPEC_CANONICAL
 # 任务级 visualize Spec 待模型与数据集契约确定后再补充。
 VISUALIZER_SPEC_CANONICAL_MAP = {
     "attentionheatmap": ATTENTION_HEATMAP_SPEC,
+    "losslandscape": LOSS_LANDSCAPE_SPEC,
 }
 VISUALIZER_SPEC_LOOKUP_MAP = {
     "attentionheatmap": "attentionheatmap",
     "attention_heatmap": "attentionheatmap",
+    "losslandscape": "losslandscape",
+    "loss_landscape": "losslandscape",
 }
 VISUALIZER_SPEC_REGISTRY = Registry(category="visualizer", canonical_map=VISUALIZER_SPEC_CANONICAL_MAP, lookup_map=VISUALIZER_SPEC_LOOKUP_MAP)
