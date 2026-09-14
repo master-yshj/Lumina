@@ -74,7 +74,6 @@ class LossLandscapeVisualizer(BaseVisualizer):
             "input_ids",
             "attention_mask",
             "token_type_ids",
-            "labels",
         )
         if not isinstance(batch, dict):
             raise TypeError(
@@ -104,6 +103,22 @@ class LossLandscapeVisualizer(BaseVisualizer):
                     f"batch['{batch_key}'] 的shape: {batch[batch_key].shape} "
                     f"必须与input_ids的shape: {expected_shape}一致喵!"
                 )
+
+        if "labels" in batch:
+            if not isinstance(batch["labels"], torch.Tensor):
+                raise TypeError("batch['labels'] 必须为torch.Tensor类型的喵!")
+            if batch["labels"].shape != expected_shape:
+                raise ValueError("labels的shape必须与input_ids一致喵!")
+        else:
+            for label_key in ("start_positions", "end_positions"):
+                if label_key not in batch:
+                    raise KeyError(f"QA batch 中缺少必需字段: {label_key} 喵!")
+                if not isinstance(batch[label_key], torch.Tensor):
+                    raise TypeError(f"batch['{label_key}'] 必须为torch.Tensor类型的喵!")
+                if batch[label_key].dim() != 1:
+                    raise ValueError(f"batch['{label_key}'] 必须为一维Tensor喵!")
+                if batch[label_key].shape[0] != expected_shape[0]:
+                    raise ValueError(f"batch['{label_key}'] 的batch维度必须与input_ids一致喵!")
         batch_size, seq_length = expected_shape
         if batch_size <= 0:
             raise ValueError(
@@ -129,11 +144,14 @@ class LossLandscapeVisualizer(BaseVisualizer):
 
             fixed_batch = {}
             for batch_key, batch_value in batch.items():
-                fixed_batch[batch_key] = (
-                    batch_value.detach()
-                    .cpu()
-                    .clone()
-                )
+                if isinstance(batch_value, torch.Tensor):
+                    fixed_batch[batch_key] = (
+                        batch_value.detach()
+                        .cpu()
+                        .clone()
+                    )
+                else:
+                    fixed_batch[batch_key] = batch_value
 
             fixed_batches.append(fixed_batch)
             actual_batch_count += 1
@@ -538,78 +556,46 @@ class LossLandscapeVisualizer(BaseVisualizer):
 
                 model_batch = {}
                 for batch_key, batch_value in fixed_batch.items():
-                    model_batch[batch_key] = batch_value.to(device=device)
+                    if isinstance(batch_value, torch.Tensor):
+                        model_batch[batch_key] = batch_value.to(device=device)
+                    else:
+                        model_batch[batch_key] = batch_value
 
                 logits = model(
                     input_ids=model_batch["input_ids"],
                     attention_mask=model_batch["attention_mask"],
                     token_type_ids=model_batch["token_type_ids"],
                 )
-                labels = model_batch["labels"]
+                if not isinstance(logits, dict):
+                    raise TypeError("model输出必须为dict类型的喵!")
 
-                if not isinstance(logits, torch.Tensor):
-                    raise TypeError(
-                        f"model输出的logits必须为torch.Tensor类型的喵! "
-                        f"现在的type: {type(logits)}"
-                    )
-                if logits.ndim != 3:
-                    raise ValueError(
-                        f"logits必须为三维Tensor喵! "
-                        f"现在的shape: {tuple(logits.shape)}"
-                    )
-                if labels.ndim != 2:
-                    raise ValueError(
-                        f"labels必须为二维Tensor喵! "
-                        f"现在的shape: {tuple(labels.shape)}"
-                    )
-                if logits.shape[:2] != labels.shape:
-                    raise ValueError(
-                        f"logits的前两维: {logits.shape[:2]} "
-                        f"必须与labels的shape: {labels.shape}一致喵!"
-                    )
-                if not logits.is_floating_point():
-                    raise TypeError(
-                        f"logits必须为浮点Tensor喵! "
-                        f"现在的dtype: {logits.dtype}"
-                    )
-                if not torch.isfinite(logits).all().item():
-                    raise ValueError(
-                        f"第{batch_index}个batch的logits包含非法值喵!"
-                    )
-                if labels.dtype != torch.long:
-                    raise TypeError(
-                        f"labels必须为torch.long喵! "
-                        f"现在的dtype: {labels.dtype}"
-                    )
+                if "labels" in model_batch:
+                    if "logits" not in logits:
+                        raise KeyError("MLM model输出中缺少logits字段喵!")
+                    model_logits = logits["logits"]
+                    labels = model_batch["labels"]
+                    if model_logits.ndim != 3 or labels.ndim != 2:
+                        raise ValueError("MLM logits必须为三维、labels必须为二维Tensor喵!")
+                    flattened_logits = model_logits.reshape(-1, model_logits.shape[-1])
+                    flattened_labels = labels.reshape(-1)
+                    loss_result = self.loss_fn(logits=flattened_logits, labels=flattened_labels)
+                else:
+                    if "start_logits" not in logits or "end_logits" not in logits:
+                        raise KeyError("QA model输出必须包含start_logits和end_logits字段喵!")
+                    start_positions = model_batch["start_positions"]
+                    end_positions = model_batch["end_positions"]
+                    start_result = self.loss_fn(logits=logits["start_logits"], labels=start_positions)
+                    end_result = self.loss_fn(logits=logits["end_logits"], labels=end_positions)
+                    if not isinstance(start_result, dict) or not isinstance(end_result, dict):
+                        raise TypeError("loss_fn返回值必须为dict类型的喵!")
+                    if "loss" not in start_result or "loss" not in end_result:
+                        raise KeyError("loss_fn返回值中缺少loss字段喵!")
+                    batch_loss = (start_result["loss"] + end_result["loss"]) / 2
 
-                batch_size = logits.shape[0]
-                seq_length = logits.shape[1]
-                num_classes = logits.shape[2]
-
-                flattened_logits = logits.reshape(
-                    batch_size * seq_length,
-                    num_classes,
-                )
-                flattened_labels = labels.reshape(
-                    batch_size * seq_length,
-                )
-
-                loss_result = self.loss_fn(
-                    logits=flattened_logits,
-                    labels=flattened_labels,
-                )
-
-                if not isinstance(loss_result, dict):
-                    raise TypeError(
-                        f"loss_fn返回值必须为dict类型的喵! "
-                        f"现在的type: {type(loss_result)}"
-                    )
-                if "loss" not in loss_result:
-                    raise KeyError(
-                        "loss_fn返回值中缺少loss字段喵!"
-                    )
-
-                batch_loss = loss_result["loss"]
+                if "labels" in model_batch:
+                    if not isinstance(loss_result, dict) or "loss" not in loss_result:
+                        raise KeyError("loss_fn返回值中缺少loss字段喵!")
+                    batch_loss = loss_result["loss"]
 
                 if not isinstance(batch_loss, torch.Tensor):
                     raise TypeError(

@@ -11,8 +11,15 @@ task: qasft_test
 
 run:
   checkpoint:
-    path: ../experiments/TinyBert_QA_SFT/checkpoints/best.pt
-    train_config: ../experiments/TinyBert_QA_SFT/config/config.yaml
+    path: ../experiments/TinyBert_QA_SFT/20260910_031052/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_QA_SFT/20260910_031052/config/config.yaml
+
+losses:
+    - name: mlm_cross_entropy
+      type: cross_entropy
+      weight: 1.0
+      params:
+        ignore_index: -100
 
 data:
   dataset:

@@ -45,7 +45,7 @@ visualize:
       params:
         normalization: per_parameter
         output_format: both
-        grid_size: 11
+        grid_size: 100
         alpha_min: -1.0
         alpha_max: 1.0
         beta_min: -1.0

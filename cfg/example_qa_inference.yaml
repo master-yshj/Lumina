@@ -13,15 +13,16 @@ task: qasft_inference
 
 run:
   checkpoint:
-    path: ../experiments/TinyBert_QA_SFT/checkpoints/best.pt
-    train_config: ../experiments/TinyBert_QA_SFT/config/config.yaml
+    path: ../experiments/TinyBert_QA_SFT/20260910_031052/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_QA_SFT/20260910_031052/config/config.yaml
 
 inference:
-  max_seq_length: 128
+  doc_stride: 64
   decoding:
-    type: top_k_sampling
+    type: qa_span_topk_decoding
     params:
-      top_k: 5
+      max_answer_length: 30
+      n_best_size: 20
 
 runtime:
   device:

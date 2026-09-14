@@ -269,6 +269,18 @@ def build_schema(context, registries):
                 allow_none=False,
             ),
         })
+    elif task_key == "qasft_inference":
+        common_fields["inference"] = MappingSchema(
+            fields={
+                "doc_stride": ScalarSchema(
+                    python_types=(int,),
+                    required=True,
+                ),
+                "decoding": decoding_schema,
+            },
+            allow_unknown=False,
+            allow_none=False,
+        )
     elif task_key.endswith("_inference"):
         common_fields["inference"] = MappingSchema(
             fields={

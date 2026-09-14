@@ -6,7 +6,6 @@ except ImportError:
     readline = None
 
 from parse.parser import parse_args, parse_config
-from start_train import EXPECTED_MODE
 from tasks.registry import TASK_BUILDER_REGISTRY
 from logger.logger import RunLogger
 from experiments import create_inference_directories
@@ -77,15 +76,25 @@ def main():
 
     try:
         while True:
-            text = input("请输入文本:")
+            if task_type == "qasft_inference":
+                context = input("请输入上下文:")
+                question = input("请输入问题:")
+                input_data = {
+                    "question": question,
+                    "context": context,
+                }
+            else:
+                text = input("请输入文本:")
+                input_data = text
+
             try:
-                prediction = inferencer.infer(text)
+                prediction = inferencer.infer(input_data)
                 result_text = prediction["result_text"]
                 logger.info(f"Inference output: {prediction}")
                 logger.info(f"{ '=' * 100}\n"
                             f"Result Text: {result_text}\n"
                             f"{ '=' * 100}\n")
-            except ValueError as e:
+            except (TypeError, ValueError) as e:
                 logger.info(f"本次处理失败了喵! {e}")
                 continue
             completed_inputs += 1

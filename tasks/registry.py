@@ -6,6 +6,8 @@ from .MLM_PreTrain.inference_builder import build_mlm_inference
 from .MLM_PreTrain.visualize_builder import build_mlm_visualize
 from .QA_SFT.builder import build_qa_sft
 from .QA_SFT.test_builder import build_qa_test
+from .QA_SFT.inference_builder import build_qa_inference
+from .QA_SFT.visualize_builder import build_qa_visualize
 
 
 # TASK_BUILDER_REGISTRY = {
@@ -29,6 +31,8 @@ canonical_map = {
     "mlmpretrain_visualize": build_mlm_visualize,
     "qasft_train": build_qa_sft,
     "qasft_test": build_qa_test,
+    "qasft_inference": build_qa_inference,
+    "qasft_visualize": build_qa_visualize,
 }
 
 lookup_map = {
@@ -46,6 +50,10 @@ lookup_map = {
     "mlm_pretrain_visualize": "mlmpretrain_visualize",
     "qa_sft_train": "qasft_train",
     "qa_sft_test": "qasft_test",
+    "qasft_inference": "qasft_inference",
+    "qa_sft_inference": "qasft_inference",
+    "qasft_visualize": "qasft_visualize",
+    "qa_sft_visualize": "qasft_visualize",
 }
 
 TASK_BUILDER_REGISTRY = Registry(

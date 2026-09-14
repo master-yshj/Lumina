@@ -2,8 +2,8 @@ from registry.base import Registry
 from parse.specs.component import EXAMPLE_TOKENIZER_SPEC, QA_TOKENIZER_SPEC, TinyBertForMaskedLM_SPEC, \
     TinyBertForQuestionAnswering_SPEC, CrossEntropyLoss_SPEC, AdamW_SPEC, StepLR, StepLR_SPEC, \
     WarmupScheduler, WarmupScheduler_SPEC, TokenAccuracy_SPEC, \
-    ExactMatch_SPEC, CharacterF1_SPEC, TopKSamplingStrategy_SPEC, BUILD_MLM_PRETRAIN_SPEC, BUILD_MLM_TEST_SPEC, \
-    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC, BUILD_MLM_VISUALIZE_SPEC, ATTENTION_HEATMAP_SPEC, LOSS_LANDSCAPE_SPEC
+    ExactMatch_SPEC, CharacterF1_SPEC, TopKSamplingStrategy_SPEC, QASpanTopKDecodingStrategy_SPEC, BUILD_MLM_PRETRAIN_SPEC, BUILD_MLM_TEST_SPEC, \
+    BUILD_MLM_INFERENCE_SPEC, BUILD_QA_SFT_SPEC, BUILD_QA_TEST_SPEC, BUILD_QA_INFERENCE_SPEC, BUILD_QA_VISUALIZE_SPEC, BUILD_MLM_VISUALIZE_SPEC, ATTENTION_HEATMAP_SPEC, LOSS_LANDSCAPE_SPEC
 
 TOKENIZER_SPEC_CANONICAL_MAP = {
     'exampletokenizer': EXAMPLE_TOKENIZER_SPEC,
@@ -48,14 +48,27 @@ METRICS_SPEC_LOOKUP_MAP = {
 }
 METRICS_SPEC_REGISTRY = Registry(category="metric", canonical_map=METRICS_SPEC_CANONICAL_MAP, lookup_map=METRICS_SPEC_LOOKUP_MAP)
 
-DECODING_SPEC_CANONICAL_MAP = {"topksampling": TopKSamplingStrategy_SPEC}
-DECODING_SPEC_LOOKUP_MAP = {"topksampling": "topksampling", "topk_sampling": "topksampling", "top_k_sampling": "topksampling"}
+DECODING_SPEC_CANONICAL_MAP = {
+    "topksampling": TopKSamplingStrategy_SPEC,
+    "qaspantopkdecoding": QASpanTopKDecodingStrategy_SPEC,
+}
+DECODING_SPEC_LOOKUP_MAP = {
+    "topksampling": "topksampling",
+    "topk_sampling": "topksampling",
+    "top_k_sampling": "topksampling",
+    "qaspantopkdecoding": "qaspantopkdecoding",
+    "qa_span_topk_decoding": "qaspantopkdecoding",
+    "qa_span_top_k_decoding": "qaspantopkdecoding",
+}
 DECODING_SPEC_REGISTRY = Registry(category="decoding", canonical_map=DECODING_SPEC_CANONICAL_MAP, lookup_map=DECODING_SPEC_LOOKUP_MAP)
 
 TASK_SPEC_CANONICAL_MAP = {
     "mlmpretrain_train": BUILD_MLM_PRETRAIN_SPEC, "mlmpretrain_test": BUILD_MLM_TEST_SPEC,
-    "mlmpretrain_inference": BUILD_MLM_INFERENCE_SPEC, "qasft_train": BUILD_QA_SFT_SPEC,
+    "mlmpretrain_inference": BUILD_MLM_INFERENCE_SPEC,
+    "qasft_train": BUILD_QA_SFT_SPEC,
     "qasft_test": BUILD_QA_TEST_SPEC,
+    "qasft_inference": BUILD_QA_INFERENCE_SPEC,
+    "qasft_visualize": BUILD_QA_VISUALIZE_SPEC,
     # AI-CHANGE: MLM 可视化任务 Spec(AI 编写, 待人工审查)。
     "mlmpretrain_visualize": BUILD_MLM_VISUALIZE_SPEC,
 }
@@ -65,7 +78,13 @@ TASK_SPEC_LOOKUP_MAP = {
     # AI-CHANGE: MLM 可视化任务 Spec 别名(AI 编写, 待人工审查)。
     "mlmpretrain_visualize": "mlmpretrain_visualize",
     "mlm_pretrain_train": "mlmpretrain_train", "mlm_pretrain_test": "mlmpretrain_test",
-    "mlm_pretrain_inference": "mlmpretrain_inference", "qa_sft_train": "qasft_train", "qa_sft_test": "qasft_test",
+    "mlm_pretrain_inference": "mlmpretrain_inference",
+    "qa_sft_train": "qasft_train",
+    "qa_sft_test": "qasft_test",
+    "qasft_inference": "qasft_inference",
+    "qa_sft_inference": "qasft_inference",
+    "qasft_visualize": "qasft_visualize",
+    "qa_sft_visualize": "qasft_visualize",
     # AI-CHANGE: MLM 可视化任务 Spec 别名(AI 编写, 待人工审查)。
     "mlm_pretrain_visualize": "mlmpretrain_visualize",
 }

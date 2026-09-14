@@ -797,6 +797,7 @@ DECODING_CANONICAL_MAP = DECODING_REGISTRY.canonical_map
 DECODING_LOOKUP_MAP = DECODING_REGISTRY.lookup_map
 
 TopKSamplingStrategy = DECODING_CANONICAL_MAP["topksampling"]
+QASpanTopKDecodingStrategy = DECODING_CANONICAL_MAP["qaspantopkdecoding"]
 
 TopKSamplingStrategy_aliases = []
 for alias, canonical_key in DECODING_LOOKUP_MAP.items():
@@ -836,6 +837,48 @@ TopKSamplingStrategy_SPEC = ComponentSpec(
     schema_contribution=None,
 )
 
+QASpanTopKDecodingStrategy_aliases = []
+for alias, canonical_key in DECODING_LOOKUP_MAP.items():
+    if canonical_key == "qaspantopkdecoding":
+        QASpanTopKDecodingStrategy_aliases.append(alias) if alias != "qaspantopkdecoding" else None
+QASpanTopKDecodingStrategy_aliases = tuple(QASpanTopKDecodingStrategy_aliases)
+
+QASpanTopKDecodingStrategy_PARAMS_SCHEMA = MappingSchema(
+    fields={
+        "max_answer_length": ScalarSchema(
+            python_types=(int,),
+            default=30,
+        ),
+        "n_best_size": ScalarSchema(
+            python_types=(int,),
+            default=20,
+        ),
+    },
+    allow_unknown=False,
+    allow_none=True,
+)
+
+QASpanTopKDecodingStrategy_SPEC = ComponentSpec(
+    category="decoding",
+    key="qaspantopkdecoding",
+    aliases=QASpanTopKDecodingStrategy_aliases,
+    params_schema=QASpanTopKDecodingStrategy_PARAMS_SCHEMA,
+    default_params={
+        "max_answer_length": 30,
+        "n_best_size": 20,
+    },
+    capabilities=frozenset(
+        name
+        for name in dir(QASpanTopKDecodingStrategy)
+        if callable(getattr(QASpanTopKDecodingStrategy, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=QASpanTopKDecodingStrategy,
+    schema_contribution=None,
+)
+
 # TASK
 TASK_CANONICAL_MAP = TASK_BUILDER_REGISTRY.canonical_map
 TASK_LOOKUP_MAP = TASK_BUILDER_REGISTRY.lookup_map
@@ -848,6 +891,8 @@ BUILD_MLM_INFERENCE = TASK_CANONICAL_MAP["mlmpretrain_inference"]
 BUILD_MLM_VISUALIZE = TASK_CANONICAL_MAP["mlmpretrain_visualize"]
 BUILD_QA_SFT = TASK_CANONICAL_MAP["qasft_train"]
 BUILD_QA_TEST = TASK_CANONICAL_MAP["qasft_test"]
+BUILD_QA_INFERENCE = TASK_CANONICAL_MAP["qasft_inference"]
+BUILD_QA_VISUALIZE = TASK_CANONICAL_MAP["qasft_visualize"]
 
 BIULD_MLM_PRETRAIN_aliases = []
 BUILD_MLM_TEST_aliases = []
@@ -856,6 +901,8 @@ BUILD_MLM_INFERENCE_aliases = []
 BUILD_MLM_VISUALIZE_aliases = []
 BUILD_QA_SFT_aliases = []
 BUILD_QA_TEST_aliases = []
+BUILD_QA_INFERENCE_aliases = []
+BUILD_QA_VISUALIZE_aliases = []
 
 for alias, canonical_key in TASK_LOOKUP_MAP.items():
     if canonical_key == "mlmpretrain_train":
@@ -870,6 +917,10 @@ for alias, canonical_key in TASK_LOOKUP_MAP.items():
         BUILD_QA_SFT_aliases.append(alias) if alias != "qasft_train" else None
     elif canonical_key == "qasft_test":
         BUILD_QA_TEST_aliases.append(alias) if alias != "qasft_test" else None
+    elif canonical_key == "qasft_inference":
+        BUILD_QA_INFERENCE_aliases.append(alias) if alias != "qasft_inference" else None
+    elif canonical_key == "qasft_visualize":
+        BUILD_QA_VISUALIZE_aliases.append(alias) if alias != "qasft_visualize" else None
 
 BIULD_MLM_PRETRAIN_aliases = tuple(BIULD_MLM_PRETRAIN_aliases)
 BUILD_MLM_TEST_aliases = tuple(BUILD_MLM_TEST_aliases)
@@ -878,6 +929,8 @@ BUILD_MLM_INFERENCE_aliases = tuple(BUILD_MLM_INFERENCE_aliases)
 BUILD_MLM_VISUALIZE_aliases = tuple(BUILD_MLM_VISUALIZE_aliases)
 BUILD_QA_SFT_aliases = tuple(BUILD_QA_SFT_aliases)
 BUILD_QA_TEST_aliases = tuple(BUILD_QA_TEST_aliases)
+BUILD_QA_INFERENCE_aliases = tuple(BUILD_QA_INFERENCE_aliases)
+BUILD_QA_VISUALIZE_aliases = tuple(BUILD_QA_VISUALIZE_aliases)
 
 MLM_PRETRAIN_TRAIN_BOOTSTRAP_DESCRIPTORS = (
     BootstrapDescriptor(("tokenizer",), "tokenizer"),
@@ -919,6 +972,19 @@ QA_SFT_TEST_BOOTSTRAP_DESCRIPTORS = (
     BootstrapDescriptor(("evaluation", "metrics", "test", "*"), "metric"),
 )
 
+QA_SFT_INFERENCE_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("inference", "decoding"), "decoding"),
+)
+
+QA_SFT_VISUALIZE_BOOTSTRAP_DESCRIPTORS = (
+    BootstrapDescriptor(("visualize", "methods", "*"), "visualizer"),
+    BootstrapDescriptor(
+        ("visualize", "methods", "*", "params", "losses", "*"),
+        "loss",
+        required=False,
+    ),
+)
+
 BIULD_MLM_PRETRAIN_PARAMS_SCHEMA = MappingSchema(
     fields={},
     allow_unknown=True,
@@ -944,6 +1010,12 @@ BUILD_QA_SFT_PARAMS_SCHEMA = MappingSchema(
 )
 
 BUILD_QA_TEST_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_QA_INFERENCE_PARAMS_SCHEMA = MappingSchema(
     fields={},
     allow_unknown=True,
     allow_none=False,
@@ -1020,8 +1092,25 @@ BUILD_MLM_INFERENCE_SPEC = ComponentSpec(
     bootstrap_descriptors=MLM_PRETRAIN_INFERENCE_BOOTSTRAP_DESCRIPTORS,
 )
 
-# PARSE_REFACTOR_DEMO: QA inference 当前没有 Builder 和 Task Spec，不能把
-# qasft_inference 作为可运行 task 写入 Parse Registry。
+BUILD_QA_INFERENCE_SPEC = ComponentSpec(
+    category="task",
+    key="qasft_inference",
+    aliases=BUILD_QA_INFERENCE_aliases,
+    params_schema=BUILD_QA_INFERENCE_PARAMS_SCHEMA,
+    default_params={},
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_QA_INFERENCE)
+        if callable(getattr(BUILD_QA_INFERENCE, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_QA_INFERENCE,
+    schema_contribution=None,
+    bootstrap_descriptors=QA_SFT_INFERENCE_BOOTSTRAP_DESCRIPTORS,
+)
+
 BUILD_QA_SFT_SPEC = ComponentSpec(
     category="task",
     key="qasft_train",
@@ -1043,6 +1132,31 @@ BUILD_QA_SFT_SPEC = ComponentSpec(
     bootstrap_descriptors=QA_SFT_TRAIN_BOOTSTRAP_DESCRIPTORS,
 )
 
+BUILD_QA_VISUALIZE_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_QA_VISUALIZE_SPEC = ComponentSpec(
+    category="task",
+    key="qasft_visualize",
+    aliases=BUILD_QA_VISUALIZE_aliases,
+    params_schema=BUILD_QA_VISUALIZE_PARAMS_SCHEMA,
+    default_params={},
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_QA_VISUALIZE)
+        if callable(getattr(BUILD_QA_VISUALIZE, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_QA_VISUALIZE,
+    schema_contribution=None,
+    bootstrap_descriptors=QA_SFT_VISUALIZE_BOOTSTRAP_DESCRIPTORS,
+)
+
 BUILD_QA_TEST_SPEC = ComponentSpec(
     category="task",
     key="qasft_test",
@@ -1062,6 +1176,31 @@ BUILD_QA_TEST_SPEC = ComponentSpec(
     factory=BUILD_QA_TEST,
     schema_contribution=None,
     bootstrap_descriptors=QA_SFT_TEST_BOOTSTRAP_DESCRIPTORS,
+)
+
+BUILD_QA_INFERENCE_PARAMS_SCHEMA = MappingSchema(
+    fields={},
+    allow_unknown=True,
+    allow_none=False,
+)
+
+BUILD_QA_INFERENCE_SPEC = ComponentSpec(
+    category="task",
+    key="qasft_inference",
+    aliases=BUILD_QA_INFERENCE_aliases,
+    params_schema=BUILD_QA_INFERENCE_PARAMS_SCHEMA,
+    default_params={},
+    capabilities=frozenset(
+        name
+        for name in dir(BUILD_QA_INFERENCE)
+        if callable(getattr(BUILD_QA_INFERENCE, name))
+        and not name.startswith("_")
+    ),
+    normalizers=(),
+    validators=(),
+    factory=BUILD_QA_INFERENCE,
+    schema_contribution=None,
+    bootstrap_descriptors=QA_SFT_INFERENCE_BOOTSTRAP_DESCRIPTORS,
 )
 
 # AI-CHANGE: MLM 可视化任务 Bootstrap 描述符(AI 编写, 待人工审查)。
