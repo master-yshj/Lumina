@@ -13,8 +13,8 @@ task: mlmpretrain_visualize
 
 run:
   checkpoint:
-    path: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/checkpoints/best.pt
-    train_config: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/config/config.yaml
+    path: ../experiments/TinyBert_MLM_PreTrain/20260915_235112/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/20260915_235112/config/config.yaml
 
 data:
   dataset:
@@ -45,7 +45,7 @@ visualize:
       params:
         normalization: per_parameter
         output_format: both
-        grid_size: 100
+        grid_size: 32
         alpha_min: -1.0
         alpha_max: 1.0
         beta_min: -1.0

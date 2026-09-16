@@ -12,8 +12,8 @@ task: mlmpretrain_test
 
 run:
   checkpoint:
-    path: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/checkpoints/best.pt
-    train_config: ../experiments/TinyBert_MLM_PreTrain/20260908_004529/config/config.yaml
+    path: ../experiments/TinyBert_MLM_PreTrain/20260915_235112/checkpoints/best.pt
+    train_config: ../experiments/TinyBert_MLM_PreTrain/20260915_235112/config/config.yaml
 
 losses:
     - name: mlm_cross_entropy
@@ -24,10 +24,10 @@ losses:
 
 data:
   dataset:
-    type: tiny_zhwiki
-    root: ../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    type: base_zhwiki
+    root: ../dataset/QA/pretrain/chinese_wiki/base_zhwiki
     splits:
-      test: tiny_zhwiki_test.jsonl
+      test: base_zhwiki_test.jsonl
     params:
       max_seq_length: 128
       mlm_prob: 0.15

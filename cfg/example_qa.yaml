@@ -33,7 +33,7 @@ model:
       layer_norm_eps: 1.0e-12
     init_from:
       kind: backbone
-      path: ../experiments/TinyBert_MLM_PreTrain/20260910_025839/checkpoints/best.pt
+      path: ../experiments/TinyBert_MLM_PreTrain/20260915_235112/checkpoints/best.pt
 
 losses:
     - name: qa_cross_entropy
@@ -93,7 +93,7 @@ optimization:
         gamma: 0.5
 
   loop:
-    total_steps: 50000
+    total_steps: 100000
     accumulation_steps: 1
     log_every_steps: 100
 
@@ -102,7 +102,7 @@ optimization:
     every_steps: 500
     early_stopping:
       enabled: true
-      patience: 10
+      patience: 20
     checkpoint:
       save_every_rounds: 1
 

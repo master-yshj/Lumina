@@ -566,13 +566,11 @@ class LossLandscapeVisualizer(BaseVisualizer):
                     attention_mask=model_batch["attention_mask"],
                     token_type_ids=model_batch["token_type_ids"],
                 )
-                if not isinstance(logits, dict):
-                    raise TypeError("model输出必须为dict类型的喵!")
 
                 if "labels" in model_batch:
-                    if "logits" not in logits:
-                        raise KeyError("MLM model输出中缺少logits字段喵!")
-                    model_logits = logits["logits"]
+                    if not isinstance(logits, torch.Tensor):
+                        raise TypeError("MLM model输出必须为torch.Tensor类型的喵!")
+                    model_logits = logits
                     labels = model_batch["labels"]
                     if model_logits.ndim != 3 or labels.ndim != 2:
                         raise ValueError("MLM logits必须为三维、labels必须为二维Tensor喵!")
@@ -580,6 +578,8 @@ class LossLandscapeVisualizer(BaseVisualizer):
                     flattened_labels = labels.reshape(-1)
                     loss_result = self.loss_fn(logits=flattened_logits, labels=flattened_labels)
                 else:
+                    if not isinstance(logits, dict):
+                        raise TypeError("QA model输出必须为dict类型的喵!")
                     if "start_logits" not in logits or "end_logits" not in logits:
                         raise KeyError("QA model输出必须包含start_logits和end_logits字段喵!")
                     start_positions = model_batch["start_positions"]

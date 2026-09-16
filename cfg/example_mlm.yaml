@@ -47,12 +47,12 @@ losses:
 
 data:
   dataset:
-    type: tiny_zhwiki
-    root: ../dataset/QA/pretrain/chinese_wiki/tiny_zhwiki
+    type: base_zhwiki
+    root: ../dataset/QA/pretrain/chinese_wiki/base_zhwiki
     splits:
-      train: tiny_zhwiki_train.jsonl
-      valid: tiny_zhwiki_val.jsonl
-      test: tiny_zhwiki_test.jsonl
+      train: base_zhwiki_train.jsonl
+      valid: base_zhwiki_val.jsonl
+      test: base_zhwiki_test.jsonl
     params:
       max_seq_length: 768
       mlm_prob: 0.15
@@ -97,7 +97,7 @@ optimization:
         gamma: 0.5
 
   loop:
-    total_steps: 10000
+    total_steps: 100000
     accumulation_steps: 1
     log_every_steps: 100
 
@@ -106,7 +106,7 @@ optimization:
     every_steps: 500
     early_stopping:
       enabled: true
-      patience: 10
+      patience: 20
     checkpoint:
       save_every_rounds: 1
 
