@@ -1,0 +1,50 @@
+version: 2
+
+experiment:
+  name: Demo_MLM_Test
+  seed: 42
+
+run:
+  mode: test
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: mlmpretrain
+
+data:
+  dataset:
+    type: demo_mlm
+    root: ../../dataset/demo/mlm
+    splits:
+      test: test.jsonl
+    params:
+      max_seq_length: 64
+  loaders:
+    test:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+  collator:
+    type: mlm_collator
+    params:
+      mlm_prob: 0.3
+
+evaluation:
+  metrics:
+    test:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

@@ -1,1 +1,0 @@
-SUPPORTED_PRETRAIN_DATASET = {'tiny_zhwiki','full_zhwiki','base_zhwiki'}

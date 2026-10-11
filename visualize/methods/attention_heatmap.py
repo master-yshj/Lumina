@@ -92,8 +92,6 @@ class AttentionHeatmapVisualizer(BaseVisualizer):
                 return [resolved_layer]
         elif isinstance(self.layer, list):
             resolved_layers = []
-            # AI-CHANGE: 循环变量改名(AI 编写, 待人工审查)。
-            # 原 for layer in self.layer 把规格名与元素名混用,易误读。
             for single_layer in self.layer:
                 if single_layer >= 0:
                     resolved_layer = single_layer
@@ -130,8 +128,6 @@ class AttentionHeatmapVisualizer(BaseVisualizer):
                 return [resolved_head]
         elif isinstance(self.head, list):
             resolved_heads = []
-            # AI-CHANGE: 循环变量改名(AI 编写, 待人工审查)。
-            # 原 for head in self.head 把规格名与元素名混用,易误读。
             for single_head in self.head:
                 if single_head >= 0:
                     resolved_head = single_head
@@ -183,10 +179,6 @@ class AttentionHeatmapVisualizer(BaseVisualizer):
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
         s_valid = len(tokens)
-        # AI-CHANGE: 自适应色标与封顶画布(AI 编写, 待人工审查)。
-        # softmax 每行和为 1,长序列均匀值约 1/N,固定 vmax=1 会把 0.1 量级的峰
-        # 压成白色；此处 vmax 取当前矩阵最大值,保证对比度拉满；画布按长度封顶，
-        # tick 最多显示 30 个，避免巨图与轴标签糊成虚线。
         raw_vmax = float(np.max(matrix))
         if not math.isfinite(raw_vmax) or raw_vmax <= 0:
             vmax = 1.0
@@ -208,9 +200,6 @@ class AttentionHeatmapVisualizer(BaseVisualizer):
             ax.set_xlabel("Key tokens")
             ax.set_ylabel("Query tokens")
             ax.set_title(f"{title} (max={raw_vmax:.3f})")
-            # AI-CHANGE: 只屏蔽缺字形 UserWarning(AI 编写, 待人工审查)。
-            # 无中文字体时中文 token 本就显示为方块字,_setup_chinese_font 已记一笔
-            # 日志;这里只过滤 savefig 触发的 Glyph missing,不吞其他有用警告。
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
                 fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -246,8 +235,6 @@ class AttentionHeatmapVisualizer(BaseVisualizer):
             save_dir.mkdir(parents=True, exist_ok=True)
         if not hasattr(tokenizer, "convert_ids_to_tokens"):
             raise ValueError(f"tokenizer 必须具有convert_ids_to_tokens方法喵!")
-        # AI-CHANGE: 返回值不再保存(AI 编写, 待人工审查)。
-        # _setup_chinese_font 的作用是设置 rcParams 副作用,返回值未使用。
         self._setup_chinese_font(logger)
         device = torch.device(device)
         was_training = model.training

@@ -1,118 +1,254 @@
-import random
-import numpy
-import torch
 
-from parse.parser import parse_args, parse_config, normalize_resume_path
-from tasks.registry import TASK_BUILDER_REGISTRY
-from experiments import create_experiments_directories, save_config_snapshot, resolve_resume_experiment_paths
+import pathlib
+from parse.parser import parse_config
+from runtime.distributed import initialize_training_runtime
+from run_support import (
+    parse_entry_args,
+    make_cli_overrides,
+    prepare_run_outputs,
+    seed_process,
+)
 from logger.logger import RunLogger
+from tasks.registry import create_builder
+import csv
 from metrics.output.plotter import plot_csv_metrics
-from device import check_device
 from Tester.test_runner import run_test
 
-EXPECTED_MODE="train"
+EXPECTED_MODE = 'train'
 
-def main():
-    args = parse_args()
-    config_path = args.config
-    resume = args.resume
-    # PARSE_REFACTOR_DEMO: 训练入口统一使用新版 Parse；Builder 暂时仍按
-    # 旧字段读取，后续由 Builder 迁移阶段解决配置字段适配。
-    config_dict, parse_context, compiled_schema = parse_config(
-        config_path=config_path,
+
+def parse_args(argv=None):
+    return parse_entry_args(EXPECTED_MODE, argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    config = parse_config(
+        args.config,
+        cli_overrides=make_cli_overrides(args),
         expected_mode=EXPECTED_MODE,
-        validate_runtime=True,
     )
-
-    # resume 实验目录复用
-    resume_path = normalize_resume_path(resume)
-
-    experiment_dict = config_dict["experiment"]
-
-    if resume_path is None:
-        # 创建实验目录
-        name = experiment_dict["name"]
-        experiment_paths = create_experiments_directories(name)
-        # 配置保存目录
-        config_dir = experiment_paths["config_dir"]
-        config_snapshot_path = save_config_snapshot(config_dict, config_dir)
-        experiment_paths["config_snapshot_path"] = config_snapshot_path
-    else:
-        experiment_paths = resolve_resume_experiment_paths(resume_path)
-
-    # 创建日志
-    log_path = experiment_paths["logs_dir"] / "train.log"
-    logger = RunLogger(log_path)
-    logger.start({
-        "运行模式": "TRAIN" if resume_path is None else "RESUME",
-        "实验名称": experiment_dict["name"],
-        "任务名称": config_dict["task"],
-        "随机种子": experiment_dict["seed"],
-        "运行设备": config_dict["runtime"]["device"]["type"],
-        "配置文件": config_path,
-        "实验目录": experiment_paths["experiment_dir"],
-        "日志文件": log_path,
-        "指标目录": experiment_paths["metrics_dir"],
-        "Checkpoint": resume_path,
-    })
-
-    logger.info("开始设置随机种子了喵~")
-
-    device = config_dict["runtime"]["device"]["type"]
-    gpu_nums = config_dict["runtime"]["device"]["count"]
-    device_summary = check_device(device, gpu_nums)
-
-    logger.info(f"当前设备信息: {device_summary}")
-
-    # 设置种子
-    seed = experiment_dict["seed"]
-    random.seed(seed)
-    numpy.random.seed(seed)
-    torch.manual_seed(seed)
-
-    # 获取任务类型
-    task_type = config_dict["task"].strip().casefold()
-    TASK_BUILDER_CANONICAL_MAP = TASK_BUILDER_REGISTRY.canonical_map
-    task_builder = TASK_BUILDER_CANONICAL_MAP[task_type]
-    task_components = task_builder(
-        config_dict,
-        resume=resume_path,
-        experiment_paths=experiment_paths,
-        logger=logger,
-        device_summary=device_summary,
-    )
-    trainer = task_components["trainer"]
-    train_dataloader = task_components["train_dataloader"]
-    fit_kwargs = task_components["fit_kwargs"]
-    train_summary = trainer.fit(train_dataloader, **fit_kwargs)
-
-    figures_dir = experiment_paths["figures_dir"]
-    train_metrics_path = task_components["train_metrics_path"]
-    valid_metrics_path = task_components["valid_metrics_path"]
-    plot_csv_metrics(train_metrics_path, figures_dir)
-    plot_csv_metrics(valid_metrics_path, figures_dir)
-
-    if config_dict["evaluation"]["test_after_train"]:
-        test_metrics_path = task_components["test_metrics_path"]
-        test_metrics_writer = task_components["test_metrics_writer"]
-        test_metric_collection = task_components["test_metric_collection"]
-        test_dataloader = task_components["test_dataloader"]
-        checkpoint_dir = experiment_paths["experiment_dir"] / "checkpoints"
-        test_ckpt_path = checkpoint_dir / "best.pt"
-
-        task = task_components["task"]
-        test_summary = run_test(
-            task=task,
-            test_dataloader=test_dataloader,
-            checkpoint_path=test_ckpt_path,
-            device=device,
-            metric_collection=test_metric_collection,
-            metrics_writer=test_metrics_writer,
-            logger=logger,
+    if args.check_config:
+        print(
+            f"配置解析与校验通过：task={config['task']['type']}，"
+            f"mode={config['run']['mode']}，未启动运行。"
         )
-        logger.info(f"{test_summary}")
+        return config
 
-    logger.finish(train_summary)
+    context, device_summary = initialize_training_runtime(config)
+    device = context.device
+    local_logger = None
+    primary_error = None
+    summary = None
 
-if __name__ == "__main__":
+    try:
+        def local_prepare():
+            return prepare_run_outputs(config)
+
+        paths = context.run_main('准备实验路径', local_prepare)
+
+        def check_paths():
+            if not isinstance(paths, dict):
+                raise TypeError(
+                    f"prepare_run_outputs 必须返回 dict 喵! 当前类型: {type(paths)}"
+                )
+            required_keys = {
+                'experiment_dir', 'run_dir', 'log_path', 'output_paths',
+            }
+            missing_keys = required_keys - set(paths)
+            if missing_keys:
+                raise ValueError(f"paths 缺少必需字段喵! {sorted(missing_keys)}")
+
+            for key in ('experiment_dir', 'run_dir'):
+                directory = paths[key]
+                if not isinstance(directory, pathlib.Path):
+                    raise TypeError(f"paths.{key} 必须为 Path 喵! 当前类型: {type(directory)}")
+                if not directory.is_absolute():
+                    raise ValueError(f"paths.{key} 必须为绝对路径喵! {directory}")
+                if not directory.is_dir():
+                    raise ValueError(
+                        f"rank {context.rank} 无法访问 paths.{key} 对应的目录喵! {directory}"
+                    )
+
+            log_path = paths['log_path']
+            if not isinstance(log_path, pathlib.Path):
+                raise TypeError(f"paths.log_path 必须为 Path 喵! 当前类型: {type(log_path)}")
+            if not log_path.is_absolute():
+                raise ValueError(f"paths.log_path 必须为绝对路径喵! {log_path}")
+            if not log_path.parent.is_dir():
+                raise ValueError(
+                    f"rank {context.rank} 无法访问日志父目录喵! {log_path.parent}"
+                )
+            if log_path.exists() and not log_path.is_file():
+                raise ValueError(f"paths.log_path 已存在，但不是文件喵! {log_path}")
+
+            output_paths = paths['output_paths']
+            if not isinstance(output_paths, dict):
+                raise TypeError(
+                    f"paths.output_paths 必须为 dict 喵! 当前类型: {type(output_paths)}"
+                )
+            missing_output_keys = {'metric_files', 'checkpoints_dir'} - set(output_paths)
+            if missing_output_keys:
+                raise ValueError(
+                    f"paths.output_paths 缺少必需字段喵! {sorted(missing_output_keys)}"
+                )
+
+            checkpoints_dir = output_paths['checkpoints_dir']
+            if not isinstance(checkpoints_dir, pathlib.Path):
+                raise TypeError(
+                    "paths.output_paths.checkpoints_dir 必须为 Path 喵! "
+                    f"当前类型: {type(checkpoints_dir)}"
+                )
+            if not checkpoints_dir.is_absolute():
+                raise ValueError(f"checkpoints_dir 必须为绝对路径喵! {checkpoints_dir}")
+            if not checkpoints_dir.is_dir():
+                raise ValueError(
+                    f"rank {context.rank} 无法访问检查点目录喵! {checkpoints_dir}"
+                )
+
+            metric_files = output_paths['metric_files']
+            if not isinstance(metric_files, dict):
+                raise TypeError(
+                    f"metric_files 必须为 dict 喵! 当前类型: {type(metric_files)}"
+                )
+            for split, csv_path in metric_files.items():
+                field = f"paths.output_paths.metric_files.{split}"
+                if not isinstance(csv_path, pathlib.Path):
+                    raise TypeError(f"{field} 必须为 Path 喵! 当前类型: {type(csv_path)}")
+                if not csv_path.is_absolute():
+                    raise ValueError(f"{field} 必须为绝对路径喵! {csv_path}")
+                if csv_path.suffix.casefold() != '.csv':
+                    raise ValueError(f"{field} 必须以 .csv 结尾喵! {csv_path}")
+                if not csv_path.parent.is_dir():
+                    raise ValueError(
+                        f"rank {context.rank} 无法访问 {field} 的父目录喵! {csv_path.parent}"
+                    )
+                if csv_path.exists() and not csv_path.is_file():
+                    raise ValueError(f"{field} 已存在，但不是文件喵! {csv_path}")
+            return None
+
+        context.run_local('检查共享输出目录', check_paths)
+
+        def create_local_logger():
+            nonlocal local_logger
+            if not context.is_main:
+                return None
+
+            local_logger = RunLogger(paths['log_path'])
+            start_info = {
+                '任务': config['task']['type'],
+                '运行模式': EXPECTED_MODE,
+                '配置路径': args.config,
+                '设备': str(device),
+                '实验目录': paths['experiment_dir'],
+            }
+            local_logger.start(start_info)
+            return local_logger
+
+        local_logger = context.run_local('创建运行日志', create_local_logger)
+
+        def seed_model():
+            seed_process(config['experiment']['seed'])
+            return None
+
+        context.run_local('设置模型种子', seed_model)
+
+        def make_builder():
+            return create_builder(
+                config,
+                device=device,
+                device_summary=device_summary,
+                output_paths=paths['output_paths'],
+                logger=local_logger,
+                runtime_context=context,
+            )
+
+        builder = context.run_local('创建 Builder', make_builder)
+
+        result = builder.build()
+
+        def seed_training():
+            seed_process(config['experiment']['seed'] + context.rank)
+            return None
+
+        context.run_local('设置本进程训练种子', seed_training)
+
+        trainer = result['trainer']
+        fit_kwargs = result['fit_kwargs']
+        train_summary = trainer.fit(**fit_kwargs)
+
+        def postprocess():
+            metric_files = paths['output_paths']['metric_files']
+            for split in ('train', 'valid'):
+                if split not in metric_files:
+                    continue
+                csv_path = metric_files[split]
+                with csv_path.open(encoding='utf-8', newline='') as stream:
+                    has_rows = next(csv.DictReader(stream), None) is not None
+                if has_rows:
+                    plot_csv_metrics(csv_path, paths['figures_dir'])
+                elif local_logger is not None:
+                    local_logger.info(f'{split} CSV 只有表头，跳过曲线绘制：{csv_path}')
+
+            run_summary = {
+                'train_summary': train_summary,
+                'experiment_dir': paths['experiment_dir'],
+            }
+            if config['evaluation']['test_after_train']:
+                test_summary = run_test(
+                    task=result['task'],
+                    test_dataloader=result['dataloaders']['test'],
+                    checkpoint_path=paths['output_paths']['checkpoints_dir'] / 'best.pt',
+                    device=device,
+                    metric_collection=result['metrics']['test'],
+                    metrics_writer=result['writers']['test'],
+                    logger=local_logger,
+                )
+                run_summary['test'] = test_summary
+            return run_summary
+
+        summary = context.run_main('训练后绘图与测试', postprocess)
+
+        def finish_logger():
+            if local_logger is not None:
+                local_logger.finish(summary)
+            return None
+
+        context.run_local('记录运行结束', finish_logger)
+
+    except Exception as error:
+        primary_error = error
+        raise
+
+    finally:
+        cleanup_errors = []
+        try:
+            if local_logger is not None:
+                close_logger = getattr(local_logger, 'close', None)
+                if callable(close_logger):
+                    close_logger()
+        except Exception as error:
+            cleanup_errors.append(error)
+
+        try:
+            context.close()
+        except Exception as error:
+            cleanup_errors.append(error)
+
+        if cleanup_errors:
+            if primary_error is not None:
+                for error in cleanup_errors:
+                    primary_error.add_note(
+                        f"清理运行资源时也发生异常：{type(error).__name__}: {error}"
+                    )
+            else:
+                cleanup_failure = RuntimeError('运行清理失败喵!')
+                for error in cleanup_errors:
+                    cleanup_failure.add_note(f'{type(error).__name__}: {error}')
+                raise cleanup_failure from cleanup_errors[0]
+
+    return summary
+
+
+if __name__ == '__main__':
     main()

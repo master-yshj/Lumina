@@ -1,3 +1,4 @@
+
 import torch
 
 from math import isfinite
@@ -16,6 +17,9 @@ class MLMInference:
         self.decoding_strategy = decoding_strategy
         self.max_seq_length = max_seq_length
 
+
+    def read_input(self, input_fn=input):
+        return input_fn("请输入含 [MASK] 的文本（Ctrl+C 或 Ctrl+D 退出）：")
 
     def infer(self, text):
         if not isinstance(text, str):

@@ -3,6 +3,7 @@ from collections import Counter
 from math import isfinite
 from metrics.process.inputs import process_predictions_references
 
+
 class CharacterF1(Metric):
     def __init__(self):
         super().__init__()
@@ -57,14 +58,35 @@ class CharacterF1(Metric):
         self.count = 0
 
     def compute(self):
-        if not type(self.total_f1) in (int, float) or self.total_f1 < 0 or not isfinite(self.total_f1):
-            raise ValueError(f"total_f1: {self.total_f1} 必须为非负有限数值喵!")
-        if not type(self.count) is int or self.count <= 0 or not isfinite(self.count):
-            raise ValueError(f"count: {self.count} 必须为有限正整数喵!")
-        summary_dict = {
-            "character_f1": self.total_f1 / self.count,
-        }
-        return summary_dict
+        state = self.distributed_state()
+        result = self.compute_from_distributed_state(state)
+        return result
 
     def output_fields(self):
         return ["character_f1"]
+
+    def distributed_state(self):
+        state = {"total_f1": self.total_f1, "count": self.count}
+        return state
+
+    def compute_from_distributed_state(self, state):
+        if not isinstance(state, dict):
+            raise TypeError(f"state: {state} 必须为dict类型的喵! 现在的type: {type(state)}")
+        if not set(state) == {'total_f1', 'count'}:
+            missing_keys = {'total_f1', 'count'} - set(state)
+            extra_keys = set(state) - {'total_f1', 'count'}
+            if missing_keys:
+                raise ValueError(f"state 中缺失了键: {missing_keys} 喵!")
+            if extra_keys:
+                raise ValueError(f"state 中多余了键: {extra_keys} 喵!")
+        total_f1 = state['total_f1']
+        count = state['count']
+        if not type(total_f1) in (int, float) or not isfinite(total_f1) or total_f1 < 0:
+            raise ValueError(f"total_f1: {total_f1} 必须为有限非负数值喵!")
+        if not type(count) is int or count < 0:
+            raise ValueError(f"count: {count} 必须为非负整数喵!")
+        if count == 0:
+            raise ValueError(f"count 不能为0喵! 无法作为除数喵!")
+        score = total_f1 / count
+        result = {"character_f1": score}
+        return result

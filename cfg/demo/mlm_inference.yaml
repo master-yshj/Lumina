@@ -1,0 +1,30 @@
+version: 2
+
+experiment:
+  name: Demo_MLM_Inference
+  seed: 42
+
+run:
+  mode: inference
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: mlmpretrain
+
+inference:
+  max_seq_length: 64
+  decoding:
+    type: top_k_sampling
+    params:
+      top_k: 2
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

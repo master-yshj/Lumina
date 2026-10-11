@@ -1,0 +1,49 @@
+version: 2
+
+experiment:
+  name: Demo_QA_Test
+  seed: 42
+
+run:
+  mode: test
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: qasft
+
+data:
+  dataset:
+    type: demo_qa
+    root: ../../dataset/demo/qa
+    splits:
+      test: test.jsonl
+    params: {}
+  loaders:
+    test:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+  collator:
+    type: qa_collator
+    params: {}
+
+evaluation:
+  metrics:
+    test:
+      - type: exact_match
+        params: {}
+      - type: character_f1
+        params: {}
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

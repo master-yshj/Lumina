@@ -1,9 +1,7 @@
 from .tokenizer import (
                     ExampleTokenizer,
                     QATokenizer)
-from .tokenizer_copy import (
-                    ExampleTokenizer as ExampleTokenizerCopy,
-                    QATokenizer as QATokenizerCopy)
+# AI 编写 C01：仅登记正式 tokenizer.py 中的类，备份不参与导入链。
 
 # TOKENIZER_REGISTRY = {
 #     'exampletokenizer':ExampleTokenizer,

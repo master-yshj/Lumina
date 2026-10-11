@@ -1,0 +1,65 @@
+version: 2
+
+experiment:
+  name: Demo_QA_Visualize
+  seed: 42
+
+run:
+  mode: visualize
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: qasft
+
+data:
+  dataset:
+    type: demo_qa
+    root: ../../dataset/demo/qa
+    splits:
+      visualize: valid.jsonl
+    params: {}
+  loaders:
+    visualize:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+  collator:
+    type: qa_collator
+    params: {}
+
+visualize:
+  methods:
+    - type: attention_heatmap
+      params:
+        layer: 0
+        head: 0
+        max_samples: 1
+    - type: loss_landscape
+      params:
+        normalization: per_parameter
+        output_format: both
+        grid_size: 3
+        alpha_min: -0.5
+        alpha_max: 0.5
+        beta_min: -0.5
+        beta_max: 0.5
+        batch_count: 1
+        losses:
+          - name: qa_cross_entropy
+            type: cross_entropy
+            weight: 1.0
+            params:
+              ignore_index: -100
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

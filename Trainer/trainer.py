@@ -1,22 +1,57 @@
 import torch
+import torch.distributed as dist
 import pathlib
-from math import isfinite
 
-from Trainer.checkpoint import build_checkpoint, save_checkpoint
+from math import isfinite
+from contextlib import nullcontext
+
+from Trainer.checkpoint import build_checkpoint, save_checkpoint, _validate_training_progress
 from device import get_memory_summary, reset_peak_memory_stats, get_memory_warning, get_oom_info
+from runtime.distributed import RuntimeContext
+from Trainer.precision import PrecisionController
+from Trainer.statistics import LossAccumulator
+from metrics.core.collection import MetricCollection
+from torch.utils.data.distributed import DistributedSampler
 
 class Trainer:
-    def __init__(self, task, optimizer, device, device_summary, train_metric_collection, valid_metric_collection, train_metrics_writer, valid_metrics_writer, scheduler=None, logger=None):
+    def __init__(self, task, optimizer, device, device_summary, train_metric_collection, valid_metric_collection, train_metrics_writer, valid_metrics_writer, scheduler=None, logger=None, *, runtime_context=None, precision=None):
         self.task = task
+        self.train_task = self.task
         self.optimizer = optimizer
         self.device = torch.device(device)
+        if runtime_context is None:
+            runtime_context = RuntimeContext(device=self.device)
+        elif not isinstance(runtime_context, RuntimeContext):
+            raise TypeError(f"runtime_context 不为None时, 必须为RuntimeContext类型的喵! 现在的type: {type(runtime_context)}")
+        if precision is None:
+            precision = PrecisionController(device=self.device, precision="fp32")
+        elif not isinstance(precision, PrecisionController):
+            raise TypeError(f"precision 不为None时, 必须为PrecisionController类型的喵! 现在的type: {type(precision)}")
+        if not self.device == runtime_context.device == precision.device:
+            raise ValueError(f"device, runtime_context的设备, precision的设备三者不一致喵!\n"
+                             f"device: {self.device}\n"
+                             f"runtime_context.device: {runtime_context.device}\n"
+                             f"precision.device: {precision.device}\n")
+        self.runtime_context = runtime_context
+        self.precision = precision
         self.device_summary = device_summary
         self.scheduler = scheduler
         self.logger = logger
+
+        if not isinstance(train_metric_collection, MetricCollection):
+            raise TypeError(f"train_metric_collection: {train_metric_collection} 必须为MetricCollection类型的喵! 现在的type: {type(train_metric_collection)}")
+        if valid_metric_collection is None:
+            valid_metric_collection = MetricCollection([])
+
         self.train_metric_collection = train_metric_collection
         self.valid_metric_collection = valid_metric_collection
         self.train_metrics_writer = train_metrics_writer
         self.valid_metrics_writer = valid_metrics_writer
+
+        self.update_attempts = 0
+        self.skipped_updates = 0
+        self.consecutive_skipped_updates = 0
+        self.data_epoch = 0
 
         self.task.to(self.device)
 
@@ -32,13 +67,156 @@ class Trainer:
         :param batch: dict
         :return: batch
         """
-        new_batch = {}
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                new_batch[k] = v.to(self.device)
+        if not isinstance(batch, dict):
+            raise TypeError(f"batch: {batch} 必须为dict类型的喵! 现在的type: {type(batch)}")
+        def move_value(value):
+            if isinstance(value, torch.Tensor):
+                return value.to(self.device)
+            elif isinstance(value, dict):
+                result = {}
+                for key, v in value.items():
+                    result[key] = move_value(v)
+                return result
+            elif isinstance(value, list):
+                result = []
+                for v in value:
+                    result.append(move_value(v))
+                return result
+            elif type(value) is tuple:
+                result = []
+                for v in value:
+                    result.append(move_value(v))
+                return tuple(result)
             else:
-                new_batch[k] = v
-        return new_batch
+                return value
+
+        moved_batch = move_value(batch)
+        return moved_batch
+
+    def _validate_task_outputs(self,outputs):
+        if not isinstance(outputs, dict):
+            raise TypeError(f"outputs: {outputs} 必须为dict类型喵! 现在的type: {type(outputs)}")
+        if not "loss" in outputs:
+            raise ValueError(f"outputs: {outputs} 中缺失了 loss 字段喵!")
+        if not "losses" in outputs:
+            raise ValueError(f"outputs: {outputs} 中缺失了 losses 字段喵!")
+        loss = outputs["loss"]
+        losses = outputs["losses"]
+
+        def scalar_value(value, field):
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"{field} 必须为 torch.Tensor 喵! "
+                    f"现在的类型: {type(value)}"
+                )
+
+            if not value.is_floating_point():
+                raise TypeError(
+                    f"{field} 必须为浮点 Tensor 喵! "
+                    f"现在的 dtype: {value.dtype}"
+                )
+
+            if value.dim() != 0:
+                raise ValueError(
+                    f"{field} 必须为零维 Tensor 喵! "
+                    f"现在的形状: {tuple(value.shape)}"
+                )
+
+            number = float(value.detach().item())
+
+            if not isfinite(number):
+                raise ValueError(
+                    f"{field} 必须为有限数值，不能是 NaN 或正负无穷喵! "
+                    f"收到: {number!r}"
+                )
+
+            return number
+
+        loss_value = scalar_value(loss, 'outputs.loss')
+        if not isinstance(losses, dict):
+            raise TypeError(f"losses: {losses} 必须为dict类型的喵! 现在的type: {type(losses)}")
+        if not losses:
+            raise ValueError(f"losses 不能为空喵!")
+        loss_records = {}
+        for loss_name, loss_detail in losses.items():
+            if not isinstance(loss_name, str):
+                raise TypeError(f"loss_name: {loss_name} 必须为str类型的喵!")
+            if not loss_name.strip():
+                raise ValueError(f"loss_name 不能为空喵!")
+            if not isinstance(loss_detail, dict):
+                raise TypeError(f"loss_detail: {loss_detail} 必须为dict类型的喵! 现在的type: {type(loss_detail)}")
+            if not "raw" in loss_detail:
+                raise ValueError(f"loss_detail 中缺少了 raw 字段喵!")
+            if not "weight" in loss_detail:
+                raise ValueError(f"loss_detail 中缺少了 weight 字段喵!")
+            if not "weighted" in loss_detail:
+                raise ValueError(f"loss_detail 中缺少了 weighted 字段喵!")
+            raw_value = scalar_value(
+                loss_detail["raw"],
+                f"outputs.losses.{loss_name}.raw"
+            )
+
+            weighted_value = scalar_value(
+                loss_detail["weighted"],
+                f"outputs.losses.{loss_name}.weighted"
+            )
+
+            weight = loss_detail["weight"]
+
+            if type(weight) not in (int, float):
+                raise TypeError(
+                    f"outputs.losses.{loss_name}.weight "
+                    f"必须为 Python int 或 float，不能是 bool 或 Tensor 喵! "
+                    f"收到: {weight!r}，类型: {type(weight)}"
+                )
+
+            if not isfinite(weight):
+                raise ValueError(
+                    f"outputs.losses.{loss_name}.weight "
+                    f"必须为有限数值，不能是 NaN 或正负无穷喵! "
+                    f"收到: {weight!r}"
+                )
+
+            loss_records[loss_name] = {
+                'raw': raw_value,
+                'weight': weight,
+                'weighted': weighted_value
+            }
+
+        step_record = {
+            'loss': loss_value,
+            'losses': loss_records
+        }
+
+        return step_record
+
+    def _forward_backward(self, batch, *, loss_divisor, synchronize):
+        if self.runtime_context.enabled and not synchronize:
+            sync_context = self.train_task.no_sync()
+        else:
+            sync_context = nullcontext()
+        with sync_context:
+            outputs = None
+            forward_error = None
+            try:
+                with self.precision.autocast_context():
+                    outputs = self.train_task(batch)
+            except Exception as e:
+                forward_error = e
+            def check_outputs():
+                if forward_error is not None:
+                    raise forward_error
+                else:
+                    step_record = self._validate_task_outputs(outputs)
+                if outputs["loss"].requires_grad:
+                    return step_record
+                else:
+                    raise ValueError(f"训练得出的 loss 不可微, 无法进行训练喵!")
+
+            step_record = self.runtime_context.run_local('检查训练输出', check_outputs)
+            backward_loss = outputs['loss'] / loss_divisor
+            self.precision.backward(backward_loss)
+        return outputs, step_record
 
     def _log_info(self, message):
         if self.logger is None:
@@ -83,63 +261,208 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
         return outputs
 
-    def _log_memory_status(self):
-        memory_summary = get_memory_summary(self.device_summary)
-        self._log_info(f"memory summary: {memory_summary}")
-        warning_summary = get_memory_warning(memory_summary)
-        if warning_summary is None:
-            pass
-        else:
-            backend = warning_summary["backend"]
-            if backend == "mps":
-                warning_check_available = warning_summary["warning_check_available"]
-                is_warning = warning_summary["is_warning"]
-                warning_threshold = warning_summary["warning_threshold"]
-                usage_ratio = warning_summary["usage_ratio"]
-                recommended_max_memory = warning_summary["recommended_max_memory"]
-                driver_allocated_memory = warning_summary["driver_allocated_memory"]
-                if warning_check_available:
-                    if is_warning:
-                        self._log_info(f"MemoryWarning: 当前显存占用过高了喵! 预警阈值: {warning_threshold} 占用比例: {usage_ratio} driver_allocated_memory: {driver_allocated_memory} recommended_max_memory: {recommended_max_memory}")
-                    else:
-                        pass
-                else:
-                    self._log_info(f"recommended_max_memory: {recommended_max_memory} 不能计算显存占用喵!")
-            elif backend == "cuda":
-                gpu_nums = warning_summary["gpu_nums"]
-                if gpu_nums == 1:
-                    device_index = warning_summary["device_index"]
-                    warning_check_available = warning_summary["warning_check_available"]
-                    is_warning = warning_summary["is_warning"]
-                    warning_threshold = warning_summary["warning_threshold"]
-                    usage_ratio = warning_summary["usage_ratio"]
-                    max_reserved_memory = warning_summary["max_reserved_memory"]
-                    total_memory = warning_summary["total_memory"]
-                    if warning_check_available:
-                        if is_warning:
-                            self._log_info(f"MemoryWarning: 当前cuda: {device_index} 显存占用过高了喵! 预警阈值: {warning_threshold} 占用比例: {usage_ratio} 当前占用显存: {max_reserved_memory} 该显卡最大显存: {total_memory}")
-                        else:
-                            pass
-                    else:
-                        pass
-                elif gpu_nums > 1:
-                    for device_index in range(gpu_nums):
-                        sub_summary = warning_summary["devices"][device_index]
-                        warning_check_available = sub_summary["warning_check_available"]
-                        is_warning = sub_summary["is_warning"]
-                        warning_threshold = sub_summary["warning_threshold"]
-                        usage_ratio = sub_summary["usage_ratio"]
-                        max_reserved_memory = sub_summary["max_reserved_memory"]
-                        total_memory = sub_summary["total_memory"]
-                        if warning_check_available:
-                            if is_warning:
-                                self._log_info(
-                                    f"MemoryWarning: 当前cuda: {device_index} 显存占用过高了喵! 预警阈值: {warning_threshold} 占用比例: {usage_ratio} 当前占用显存: {max_reserved_memory} 该显卡最大显存: {total_memory}")
-                            else:
-                                pass
-                        else:
-                            pass
+    def _log_memory_status(self, stage):
+        context = self.runtime_context
 
+        if self.device.type == 'cpu':
+            return None
+
+        if self.device.type == 'mps':
+            if context.enabled:
+                raise NotImplementedError(
+                    "当前 MPS 显存监控仅保留单进程逻辑，不支持 DDP 喵!"
+                )
+
+            if not isinstance(stage, str):
+                raise TypeError(
+                    f"stage 必须为 str 类型的喵! 现在的type: {type(stage)}"
+                )
+            if stage not in ('dry_run', 'train', 'validation', 'finish'):
+                raise ValueError(
+                    f"stage: {stage!r} 不被允许喵! "
+                    f"允许值为 dry_run、train、validation、finish"
+                )
+
+            memory_summary = get_memory_summary(self.device_summary)
+            warning_summary = get_memory_warning(memory_summary)
+
+            prefix = (
+                f"stage={stage} "
+                f"rank={context.rank} "
+                f"device=mps "
+                f"precision={self.precision.precision} "
+                f"global_step={self.global_step} "
+                f"micro_step={self.micro_step}"
+            )
+            self._log_info(
+                f"memory {prefix} summary={memory_summary}"
+            )
+
+            if warning_summary is not None:
+                warning_check_available = warning_summary[
+                    'warning_check_available'
+                ]
+                recommended_max_memory = warning_summary[
+                    'recommended_max_memory'
+                ]
+
+                if not warning_check_available:
+                    self._log_info(
+                        f"memory {prefix} "
+                        f"recommended_max_memory="
+                        f"{recommended_max_memory} bytes，"
+                        f"无法计算 MPS 显存占用比例喵!"
+                    )
+                elif warning_summary['is_warning']:
+                    usage_ratio = warning_summary['usage_ratio']
+                    warning_threshold = warning_summary['warning_threshold']
+                    driver_allocated_memory = warning_summary[
+                        'driver_allocated_memory'
+                    ]
+
+                    self._log_info(
+                        f"MemoryWarning {prefix} "
+                        f"当前 MPS 驱动分配内存占推荐上限的比例达到阈值："
+                        f"usage_ratio={usage_ratio:.1%} "
+                        f"warning_threshold={warning_threshold:.1%} "
+                        f"driver_allocated_memory="
+                        f"{driver_allocated_memory} bytes "
+                        f"recommended_max_memory="
+                        f"{recommended_max_memory} bytes"
+                    )
+
+            return None
+
+        if self.device.type != 'cuda':
+            raise ValueError(
+                f"不支持当前设备的显存监控喵! "
+                f"device.type: {self.device.type!r}"
+            )
+
+        def collect_local():
+            return self._collect_memory_record(stage)
+
+        record = context.run_local('采集本地显存', collect_local)
+
+        if not context.enabled:
+            records = [record]
+        else:
+            records = [None] * context.world_size
+            dist.all_gather_object(records, record)
+
+        def write_main():
+            self._write_memory_records(records)
+            return None
+
+        context.run_main('记录显存', write_main)
+
+        return None
+
+    def _report_local_cuda_oom(self, error, stage):
+        if self.device.type != 'cuda':
+            return None
+
+        oom_error = None
+
+        try:
+            current = error
+
+            visited = set()
+
+            while current is not None:
+                current_id = id(current)
+
+                if current_id in visited:
+                    break
+
+                visited.add(current_id)
+
+                if isinstance(current, torch.cuda.OutOfMemoryError):
+                    oom_error = current
+                    break
+
+                current = current.__cause__
+
+            if oom_error is None:
+                return None
+
+            if getattr(oom_error, '_lumina_memory_reported', False):
+                return None
+
+            oom_error._lumina_memory_reported = True
+
+            device_index = self.device.index
+            if device_index is None:
+                device_index = self.device_summary['device_index']
+
+            diagnostic = {
+                'stage': stage,
+                'rank': self.runtime_context.rank,
+                'device_index': device_index,
+                'global_step': self.global_step,
+                'micro_step': self.micro_step,
+                'precision': self.precision.precision,
+                'error_type': type(oom_error).__name__,
+                'message': str(oom_error),
+                'memory': None,
+                'advice': None,
+            }
+
+            try:
+                diagnostic['advice'] = get_oom_info(
+                    oom_error,
+                    self.device_summary,
+                    stage,
+                )
+            except Exception as advice_error:
+                diagnostic['advice_error'] = (
+                    f"{type(advice_error).__name__}: {advice_error}"
+                )
+
+            try:
+                diagnostic['memory'] = get_memory_summary(
+                    self.device_summary
+                )
+            except Exception as memory_error:
+                diagnostic['memory_error'] = (
+                    f"{type(memory_error).__name__}: {memory_error}"
+                )
+
+            message = f"CUDA OOM: {diagnostic}"
+            context = self.runtime_context
+
+            if context.is_main and self.logger is not None:
+                self._log_info(message)
+            else:
+                print(message, flush=True)
+
+        except Exception as diagnostic_error:
+            if oom_error is not None:
+                note_target = oom_error
+            else:
+                note_target = error
+
+            try:
+                note_target.add_note(
+                    f"获取或输出 CUDA OOM 诊断时发生异常："
+                    f"{type(diagnostic_error).__name__}: {diagnostic_error}"
+                )
+            except Exception:
+                pass
+
+            try:
+                print(
+                    f"CUDA OOM 诊断失败："
+                    f"rank={self.runtime_context.rank} "
+                    f"stage={stage} "
+                    f"error_type={type(diagnostic_error).__name__} "
+                    f"message={diagnostic_error}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+
+        return None
 
     def train_step(self, batch, should_zero_grad, should_update, loss_divisor):
         """
@@ -156,89 +479,152 @@ class Trainer:
         :param loss_divisor: int, loss缩放参数
         :return: new_dict, 执行训练任务后脱离计算图的输出结果
         """
-        if not isinstance(batch, dict):
-            raise ValueError(f"传入的batch必须为dict类型的喵! 现在type: {type(batch)}")
-        if not type(should_zero_grad) is bool:
-            raise ValueError(f"传入的should_zero_grad必须为bool类型的喵! 现在的type: {type(should_zero_grad)}")
-        if not type(should_update) is bool:
-            raise ValueError(f"传入的should_update必须为bool类型的喵! 现在的type: {type(should_update)}")
-        if not type(loss_divisor) is int or loss_divisor <= 0:
-            raise ValueError(f"传入的loss_divisor: {loss_divisor} 必须为正整数喵!")
-        try:
-            self.task.train()
-            batch = self._transfer_batch_device(batch)
+        def prepare_batch():
+            if not type(should_zero_grad) is bool:
+                raise TypeError(f"should_zero_grad: {should_zero_grad} 必须为bool值喵! 现在的type:{type(should_zero_grad)}")
+            if not type(should_update) is bool:
+                raise TypeError(f"should_update: {should_update} 必须为bool值喵! 现在的type:{type(should_update)}")
+            if not type(loss_divisor) is int or loss_divisor <= 0:
+                raise TypeError(f"loss_divisor: {loss_divisor} 必须为正整数的喵!")
+            self.train_task.train()
+            moved_batch = self._transfer_batch_device(batch)
             if should_zero_grad:
                 self.optimizer.zero_grad(set_to_none=True)
-            outputs = self.task(batch)
-            if not isinstance(outputs, dict):
-                raise ValueError(f"执行训练任务的结果必须为dict类型的喵! 现在type: {type(outputs)}")
-            if not "loss" in outputs:
-                raise ValueError(f"执行训练任务返回的dict必须包含 'loss' 这个键喵!")
-            original_loss = outputs["loss"]
-            if not isinstance(original_loss, torch.Tensor):
-                raise ValueError(f"loss必须为Tensor喵! 现在的type为: {type(original_loss)}")
-            if not original_loss.dim() == 0:
-                raise ValueError(f"loss必须为标量型Tensor喵(即0维)! 现在的维度为: {original_loss.dim()}")
-            if not torch.isfinite(original_loss).item():
-                raise ValueError(f"loss出现NaN值或无限值! 训练崩了喵!")
-            backward_loss = original_loss / loss_divisor
-            backward_loss.backward()
+            return moved_batch
+        operation = 'train.prepare'
+        try:
+            moved_batch = self.runtime_context.run_local('准备训练批次', prepare_batch)
+            operation = 'train.forward_backward'
+            outputs, step_record = self._forward_backward(moved_batch, loss_divisor=loss_divisor, synchronize=should_update)
+            def update_metrics():
+                with torch.no_grad():
+                    self.train_metric_collection.update(batch=moved_batch, outputs=outputs)
+                return None
+            operation = 'train.metrics'
+            self.runtime_context.run_local('更新训练指标', update_metrics)
+            did_update = False
             if should_update:
-                self.optimizer.step()
+                operation = 'train.optimizer'
+                did_update = self.precision.step(self.optimizer, self.runtime_context)
+                def clear_cycle_gradients():
+                    self.optimizer.zero_grad(set_to_none=True)
+                    return None
+                operation = 'train.clear_gradients'
+                self.runtime_context.run_local('清理周期梯度', clear_cycle_gradients)
+            step_record['did_update'] = did_update
+            return step_record
+        except Exception as error:
+            self._report_local_cuda_oom(error, operation)
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+            except Exception as cleanup_error:
+                error.add_note(
+                    f"处理训练异常时，清理梯度也失败了："
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+
+            raise
+
+    def _record_train_step(self, step_result, *, should_update, run_accumulator, interval_accumulator):
+        MAX_CONSECUTIVE_SKIPPED_UPDATES = 100
+        context = self.runtime_context
+        def record_batch():
+            did_update = step_result["did_update"]
+
+            if type(did_update) is not bool:
+                raise TypeError(
+                    f"step_result['did_update'] 必须为 bool 类型喵! "
+                    f"收到: {did_update!r}，类型: {type(did_update)}"
+                )
+
+            if not should_update and did_update:
+                raise ValueError(
+                    "梯度累积周期的中间批不能更新参数喵! "
+                    f"should_update={should_update}，did_update={did_update}"
+                )
+
+            run_accumulator.update(step_result)
+            interval_accumulator.update(step_result)
+
+            self.micro_step += 1
+
+            return step_result["loss"]
+
+        last_loss = context.run_local('累计训练批次', record_batch)
+        if not should_update:
+            return last_loss
+        did_update = step_result['did_update']
+        def record_update():
+            self.update_attempts += 1
+            if did_update:
+                self.global_step += 1
+                self.consecutive_skipped_updates = 0
                 if self.scheduler is not None:
                     self.scheduler.step()
-        except Exception as error:
-            oom_info_dict = get_oom_info(error,self.device_summary,"Train Step")
-            self.optimizer.zero_grad(set_to_none=True)
-            if oom_info_dict is None:
-                raise
             else:
-                self._log_info(f"OutOfMemory: {oom_info_dict}")
-                raise RuntimeError(f"OutOfMemory: {oom_info_dict}") from error
-        total_loss = outputs["loss"].item()
-        new_dict = {"loss": total_loss}
-        new_dict["losses"] = {}
-        if not "losses" in outputs:
-            raise ValueError(f"执行训练任务返回的dict必须包含 'losses' 这个键喵!")
-        if not isinstance(outputs["losses"], dict):
-            raise ValueError(f"执行训练任务返回的dict的losses的值必须为dict类型的喵! 现在是: {type(outputs['losses'])}")
-        if not outputs["losses"]:
-            raise ValueError(f"执行训练任务返回的dict的losses的值不能为空喵!")
-        for loss_name, loss_info in outputs["losses"].items():
-            if not isinstance(loss_info, dict):
-                raise ValueError(f"outputs.losses.{loss_name} 的值必须为dict类型的喵!")
-            if not loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 不能为空喵!")
-            if not "raw" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了raw字段喵!")
-            raw = loss_info["raw"]
-            if not isinstance(raw, torch.Tensor) or not raw.dim() == 0 or not torch.isfinite(raw).item():
-                raise ValueError(f"raw 必须为有限零维张量喵!")
-            if not "weight" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了weight字段喵!")
-            weight = loss_info["weight"]
-            if not type(weight) in (float, int) or not isfinite(weight):
-                raise ValueError(f"weight 必须为整型或浮点型喵!")
-            if not "weighted" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了weighted字段喵!")
-            weighted = loss_info["weighted"]
-            if not isinstance(weighted, torch.Tensor) or not weighted.dim() == 0 or not torch.isfinite(weighted).item():
-                raise ValueError(f"weighted 必须为有限零维张量喵!")
-            raw = raw.item()
-            weighted = weighted.item()
-            new_info = {"raw": raw,
-                        "weight": weight,
-                        "weighted": weighted
-                        }
-            new_dict["losses"][loss_name] = new_info
+                self.skipped_updates += 1
+                self.consecutive_skipped_updates += 1
+            if self.consecutive_skipped_updates >= MAX_CONSECUTIVE_SKIPPED_UPDATES:
+                scale = None
+                if self.precision.scaler is not None:
+                    scale = self.precision.scaler.get_scale()
 
-        context = {
-            "batch": batch,
-            "outputs": outputs,
-        }
-        self.train_metric_collection.update(**context)
+                raise RuntimeError(
+                    f"连续跳过参数更新的次数已达到上限，停止训练喵!\n"
+                    f"precision: {self.precision.precision}\n"
+                    f"global_step: {self.global_step}\n"
+                    f"连续跳过次数: {self.consecutive_skipped_updates}\n"
+                    f"允许上限: {MAX_CONSECUTIVE_SKIPPED_UPDATES}\n"
+                    f"当前缩放因子 scale: {scale}\n"
+                    f"请检查损失与梯度是否持续出现 NaN 或无穷值。"
+                )
 
-        return new_dict
+            return None
+        context.run_local('记录参数更新', record_update)
+        return last_loss
+
+    def _collect_train_summary(self,run_accumulator,interval_accumulator,*,include_metrics=True):
+        run_summary = run_accumulator.summarize(self.runtime_context)
+        interval_summary = interval_accumulator.summarize(self.runtime_context)
+        metrics = {}
+        if include_metrics and interval_summary['completed_batches'] > 0:
+            metrics = self.train_metric_collection.compute_distributed(self.runtime_context)
+        train_summary = {'run': run_summary, 'interval': interval_summary, 'metrics': metrics}
+        return train_summary
+
+    def _make_metrics_row(self,summary,metric_values,interval_summary=None):
+        row = {'global_step': self.global_step, 'avg_loss': summary['avg_loss']}
+        if interval_summary is not None:
+            row['lr'] = self._get_current_lr()
+            row['interval_avg_loss'] = interval_summary['avg_loss']
+        for loss_name, loss_detail in summary["losses"].items():
+            row[f'{loss_name}_avg_raw'] = loss_detail['avg_raw']
+            row[f'{loss_name}_avg_weighted_loss'] = loss_detail['avg_weighted']
+        if interval_summary is not None:
+            for loss_name, loss_detail in interval_summary["losses"].items():
+                row[f'{loss_name}_interval_avg_raw'] = loss_detail['avg_raw']
+                row[f'{loss_name}_interval_avg_weighted_loss'] = loss_detail['avg_weighted']
+        for key, value in metric_values.items():
+            if key in row:
+                raise ValueError(f"row: {row} 中存在重复列名: {key} 喵!")
+            row[key] = value
+        return row
+
+    def _write_train_summary(self,train_summary):
+        if not train_summary['interval']['completed_batches']>0:
+            raise ValueError(f"completed_batches: {train_summary['interval']['completed_batches']} 不大于0时无法进行写入操作喵!")
+        row = self._make_metrics_row(train_summary['run'], train_summary['metrics'], interval_summary=train_summary['interval'])
+        if self.train_metrics_writer is not None:
+            self.train_metrics_writer.write(row)
+        return None
+
+    def _finish_train_interval(self,interval_accumulator):
+        def reset_interval():
+            interval_accumulator.reset()
+            self.train_metric_collection.reset()
+            return None
+        self.runtime_context.run_local('清空已报告训练区间', reset_interval)
+        return None
 
     def valid_step(self, batch):
         """
@@ -252,75 +638,15 @@ class Trainer:
         }
         :return: new_dict, 执行训练任务后脱离计算图的输出结果
         """
-        if not isinstance(batch, dict):
-            raise ValueError(f"传入的batch必须为dict类型的喵! 现在type: {type(batch)}")
+        moved_batch=self._transfer_batch_device(batch)
         self.task.eval()
-        try:
-            batch = self._transfer_batch_device(batch)
-            with torch.no_grad():
-                outputs = self.task(batch)
-            if not isinstance(outputs, dict):
-                raise ValueError(f"执行训练任务的结果必须为dict类型的喵! 现在type: {type(outputs)}")
-            if not "loss" in outputs:
-                raise ValueError(f"执行训练任务返回的dict必须包含 'loss' 这个键喵!")
-            original_loss = outputs["loss"]
-            if not isinstance(original_loss, torch.Tensor):
-                raise ValueError(f"loss必须为Tensor喵! 现在的type为: {type(original_loss)}")
-            if not original_loss.dim() == 0:
-                raise ValueError(f"loss必须为标量型Tensor喵(即0维)! 现在的维度为: {original_loss.dim()}")
-            if not torch.isfinite(original_loss).item():
-                raise ValueError(f"loss出现NaN值或无限值! 训练崩了喵!")
-        except Exception as error:
-            oom_info_dict = get_oom_info(error,self.device_summary,"Validation")
-            if oom_info_dict is None:
-                raise
-            else:
-                self._log_info(f"OutOfMemory: {oom_info_dict}")
-                raise RuntimeError(f"OutOfMemory: {oom_info_dict}") from error
-        total_loss = outputs["loss"].item()
-        new_dict = {"loss": total_loss}
-        new_dict["losses"] = {}
-        if not "losses" in outputs:
-            raise ValueError(f"执行训练任务返回的dict必须包含 'losses' 这个键喵!")
-        if not isinstance(outputs["losses"], dict):
-            raise ValueError(f"执行训练任务返回的dict的losses的值必须为dict类型的喵! 现在是: {type(outputs['losses'])}")
-        if not outputs["losses"]:
-            raise ValueError(f"执行训练任务返回的dict的losses的值不能为空喵!")
-        for loss_name, loss_info in outputs["losses"].items():
-            if not isinstance(loss_info, dict):
-                raise ValueError(f"outputs.losses.{loss_name} 的值必须为dict类型的喵!")
-            if not loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 不能为空喵!")
-            if not "raw" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了raw字段喵!")
-            raw = loss_info["raw"]
-            if not isinstance(raw, torch.Tensor) or not raw.dim() == 0 or not torch.isfinite(raw).item():
-                raise ValueError(f"raw 必须为有限零维张量喵!")
-            if not "weight" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了weight字段喵!")
-            weight = loss_info["weight"]
-            if not type(weight) in (float, int) or not isfinite(weight):
-                raise ValueError(f"weight 必须为整型或浮点型喵!")
-            if not "weighted" in loss_info:
-                raise ValueError(f"outputs.losses.{loss_name} 缺少了weighted字段喵!")
-            weighted = loss_info["weighted"]
-            if not isinstance(weighted, torch.Tensor) or not weighted.dim() == 0 or not torch.isfinite(weighted).item():
-                raise ValueError(f"weighted 必须为有限零维张量喵!")
-            raw = raw.item()
-            weighted = weighted.item()
-            new_info = {"raw": raw,
-                        "weight": weight,
-                        "weighted": weighted
-                        }
-            new_dict["losses"][loss_name] = new_info
+        with torch.no_grad():
+            with self.precision.autocast_context():
+                outputs = self.task(moved_batch)
+            step_record = self._validate_task_outputs(outputs)
+            self.valid_metric_collection.update(batch=moved_batch, outputs=outputs)
+        return step_record
 
-        context = {
-            "batch": batch,
-            "outputs": outputs,
-        }
-        self.valid_metric_collection.update(**context)
-
-        return new_dict
 
     def validate(self, valid_dataloader):
         """
@@ -332,97 +658,159 @@ class Trainer:
                 "avg_loss": avg_loss,
             }
         """
+        if valid_dataloader is None:
+            raise ValueError(f"valid_dataloader 不能为空喵!")
+        accumulator = LossAccumulator()
         self.valid_metric_collection.reset()
-        total_loss = 0.0
-        last_loss = None
-        completed_batches = 0
-        avg_loss = 0.0
-        losses_dict = {}
-        batch_num = len(valid_dataloader)
-        for idx, batch in enumerate(valid_dataloader):
-            output_dict = self.valid_step(batch=batch)
-            if not isinstance(output_dict, dict):
-                raise ValueError(f"output_dict的值应该为dict类型喵! 现在是type: {type(output_dict)}")
-            if not "loss" in output_dict:
-                raise ValueError(f"output_dict里面不包含loss的键喵!")
-            loss = output_dict["loss"]
-            if not type(loss) in (float, int) or not isfinite(loss):
-                raise ValueError(f"loss必须为有限浮点数或整数喵! 请检查loss是否为nan喵! loss: {loss}")
-            if not "losses" in output_dict:
-                raise ValueError(f"output_dict里面不包含losses的键喵!")
-            if not isinstance(output_dict["losses"], dict):
-                raise ValueError(f"output_dict的losses必须为dict类型的喵!")
-            if not output_dict["losses"]:
-                raise ValueError(f"output_dict的losses不能为空喵!")
-
-            completed_batches += 1
-            total_loss += loss
-            last_loss = loss
-            avg_loss = total_loss / completed_batches
-            if losses_dict and not set(output_dict["losses"].keys()) == set(losses_dict.keys()):
-                raise ValueError(f"output_dict与losses_dict之间的字段不一致喵!")
-            for loss_name, loss_info in output_dict["losses"].items():
-                raw = loss_info["raw"]
-                weighted = loss_info["weighted"]
-                weight = loss_info["weight"]
-
-                if loss_name not in losses_dict:
-                    losses_dict[loss_name] = {
-                        "raw": 0.0,
-                        "weighted": 0.0,
-                        "weight": weight,
-                    }
-                else:
-                    if not losses_dict[loss_name]["weight"] == loss_info["weight"]:
-                        raise ValueError(
-                            f"{loss_name} 的权重出现变化了喵! 现在是: {loss_info['weight']} 应该是: {losses_dict[loss_name]['weight']}")
-                losses_dict[loss_name]["raw"] += raw
-                losses_dict[loss_name]["weighted"] += weighted
-
-            self._log_info(f"batch={completed_batches}/{batch_num}, loss={loss:.6f}, avg_loss={avg_loss:.6f}")
-
-        if completed_batches == 0:
-            raise ValueError(f"valid_dataloader是空的喵!")
-
-        avg_losses_dict = {}
-        for loss_name, loss_info in losses_dict.items():
-            avg_losses_dict[loss_name] = {
-                'avg_raw': loss_info["raw"] / completed_batches,
-                'avg_weighted_loss': loss_info["weighted"] / completed_batches,
-                'weight': loss_info["weight"],
-            }
-
-        metric_output = self.valid_metric_collection.compute()
-
-        summary_dict = {
-            "completed_batches": completed_batches,
-            "last_loss": last_loss,
-            "avg_loss": avg_loss,
-            "losses": avg_losses_dict,
-            "valid_metrics": metric_output,
+        for batch in valid_dataloader:
+            step_record = self.valid_step(batch)
+            accumulator.update(step_record)
+        loss_summary=accumulator.summarize()
+        if loss_summary['completed_batches'] == 0:
+            raise ValueError(f"DataLoader 未产生批次, completed_batches 为0了喵!")
+        valid_metrics = self.valid_metric_collection.compute()
+        validation_summary = {
+            'avg_loss': loss_summary['avg_loss'],
+            'losses': loss_summary['losses'],
+            'completed_batches': loss_summary['completed_batches'],
+            'valid_metrics': valid_metrics
         }
+        return validation_summary
 
-        valid_metrics_row = {
-            "global_step": self.global_step,
-            "avg_loss": summary_dict["avg_loss"],
+    def _validation_event(self, valid_dataloader, train_summary, interval_accumulator, validation_options, checkpoint_options):
+        context = self.runtime_context
+        def main_action():
+            if not valid_dataloader:
+                raise ValueError(f"传入的valid_dataloader不能为空喵!")
+            validation_summary = self.validate(valid_dataloader)
+            current_loss = validation_summary['avg_loss']
+            if not validation_summary['completed_batches']>0:
+                raise ValueError(f"completed_batches: {validation_summary['completed_batches']} 必须大于0喵!")
+            improved = self.best_validation_loss is None or current_loss < self.best_validation_loss
+            self.completed_validations += 1
+            if improved:
+                self.best_validation_loss = current_loss
+                self.validation_rounds_without_improvement = 0
+            else:
+                self.validation_rounds_without_improvement += 1
+            patience = validation_options['patience']
+            early_stopped = False
+            if patience:
+                early_stopped = self.validation_rounds_without_improvement >= patience
+            saved_paths = []
+            if checkpoint_options['enabled']:
+                directory = checkpoint_options['directory']
+                save_every_rounds = checkpoint_options['save_every_rounds']
+                save_best = improved
+                save_last = self.completed_validations % save_every_rounds == 0
+                if save_best or save_last:
+                    checkpoint = build_checkpoint(self.task, self.optimizer, self.scheduler, self)
+                    if save_best:
+                        best_path = directory / 'best.pt'
+                        save_checkpoint(checkpoint, best_path)
+                        saved_paths.append(str(best_path))
+                    if save_last:
+                        last_path = directory / 'last.pt'
+                        save_checkpoint(checkpoint, last_path)
+                        saved_paths.append(str(last_path))
+            self._write_train_summary(train_summary)
+            valid_row = self._make_metrics_row(validation_summary, validation_summary['valid_metrics'], interval_summary=None)
+            if self.valid_metrics_writer is not None:
+                self.valid_metrics_writer.write(valid_row)
+            progress = self.get_training_progress()
+            event_result = {'validation_summary': validation_summary, 'progress': progress, 'early_stopped': early_stopped, 'saved_paths': saved_paths}
+            return event_result
+        event_result = context.run_main('验证与保存', main_action)
+        def apply_progress():
+            self.load_training_progress(event_result['progress'])
+        context.run_local('同步验证进度', apply_progress)
+        self._finish_train_interval(interval_accumulator)
+        return event_result
+
+    def _finish_training(self, run_accumulator, interval_accumulator, *, last_loss, last_train_summary, last_validation_summary, early_stopped, checkpoint_options, no_training_needed=False):
+        context = self.runtime_context
+        avg_loss = None
+        last_interval_avg_loss = None
+        global_last_loss = None
+        losses = {}
+        last_interval_losses = {}
+        train_metrics = {}
+        if no_training_needed:
+            last_validation_summary = None
+            early_stopped = False
+        else:
+            def check_final_inputs():
+                if not isinstance(run_accumulator, LossAccumulator):
+                    raise TypeError(f"run_accumulator: {run_accumulator} 必须为LossAccumulator类型的喵! 现在的type: {type(run_accumulator)}")
+                if not isinstance(interval_accumulator, LossAccumulator):
+                    raise TypeError(f"interval_accumulator: {interval_accumulator} 必须为LossAccumulator类型的喵! 现在的type: {type(interval_accumulator)}")
+                if not run_accumulator.batch_count>0:
+                    raise ValueError(f"batch_count: {run_accumulator.batch_count} 必须至少为1喵!")
+                if not type(last_loss) in (int, float) or not isfinite(last_loss):
+                    raise ValueError(f"last_loss: {last_loss} 必须为有限数值喵!")
+                return interval_accumulator.batch_count>0
+            has_interval = context.run_local('检查训练收尾', check_final_inputs)
+            if context.enabled:
+                interval_flags = [None] * context.world_size
+                dist.all_gather_object(interval_flags, has_interval)
+                reference = interval_flags[0]
+
+                for rank, flag in enumerate(interval_flags):
+                    if flag != reference:
+                        raise RuntimeError(
+                            "训练收尾时，各进程的 has_interval 不一致喵! "
+                            f"rank 0 为 {reference}，rank {rank} 为 {flag}；"
+                            f"全部结果为 {interval_flags}。"
+                            "请检查各进程的区间累计和清空时机是否一致。"
+                        )
+            if has_interval:
+                last_train_summary = self._collect_train_summary(run_accumulator, interval_accumulator,  include_metrics=True)
+                def write_tail():
+                    self._write_train_summary(last_train_summary)
+                context.run_main('写末尾训练统计', write_tail)
+                self._finish_train_interval(interval_accumulator)
+            run_summary = run_accumulator.summarize(context)
+            avg_loss = run_summary['avg_loss']
+            losses = run_summary['losses']
+            if last_train_summary is not None:
+                interval_summary = last_train_summary['interval']
+                last_interval_avg_loss = interval_summary['avg_loss']
+                last_interval_losses = interval_summary['losses']
+                train_metrics = last_train_summary['metrics']
+                global_last_loss = last_loss
+                if context.enabled:
+                    reduce_device = context.device
+                    last_loss_tensor = torch.tensor(last_loss, dtype=torch.float64, device=reduce_device)
+                    dist.all_reduce(last_loss_tensor, op=dist.ReduceOp.SUM)
+                    global_last_loss = float(last_loss_tensor.item()) / context.world_size
+                    return None
+                if checkpoint_options['enabled']:
+                    def save_final():
+                        checkpoint = build_checkpoint(self.task, self.optimizer, self.scheduler, self)
+                        last_path = checkpoint_options['directory'] / 'last.pt'
+                        save_checkpoint(checkpoint, last_path)
+                        return str(last_path)
+                    context.run_main('保存最终权重', save_final)
+        summary = {
+            'completed_iters': self.global_step,
+            'global_step': self.global_step,
+            'micro_step': self.micro_step,
+            'avg_loss': avg_loss,
+            'last_loss': global_last_loss,
+            'losses': losses,
+            'last_interval_losses': last_interval_losses,
+            'completed_validations': self.completed_validations,
+            'last_validation_summary': last_validation_summary,
+            'best_validation_loss': self.best_validation_loss,
+            'validation_rounds_without_improvement': self.validation_rounds_without_improvement,
+            'early_stopped': early_stopped,
+            'train_metrics': train_metrics,
+            'last_interval_avg_loss': last_interval_avg_loss,
+            'no_training_needed': no_training_needed,
+            'update_attempts': self.update_attempts,
+            'skipped_updates': self.skipped_updates,
         }
-        for loss_name, loss_info in summary_dict["losses"].items():
-            avg_raw = loss_info["avg_raw"]
-            avg_weighted_loss = loss_info["avg_weighted_loss"]
-            loss_raw_fieldname = f"{loss_name}_avg_raw"
-            loss_weighted_fieldname = f"{loss_name}_avg_weighted_loss"
-            valid_metrics_row[loss_raw_fieldname] = avg_raw
-            valid_metrics_row[loss_weighted_fieldname] = avg_weighted_loss
-        for metric_key, metric_value in summary_dict["valid_metrics"].items():
-            valid_metrics_row[metric_key] = metric_value
-        self.valid_metrics_writer.write(valid_metrics_row)
-
-        self.valid_metric_collection.reset()
-
-        self._log_info(f"batches={completed_batches}, avg_loss={avg_loss:.6f}\n"
-                       f"metrics:{metric_output}")
-        return summary_dict
-
+        return summary
 
     def fit(self, train_dataloader, total_steps, log_every_steps=100, accumulation_steps=1, valid_dataloader=None, validation_enabled=False, validation_every_steps=None, early_stopping_patience=None, checkpoint_save_every_rounds=None, checkpoints_dir = None ):
         """
@@ -451,329 +839,270 @@ class Trainer:
                             "checkpoint_save_every_rounds": checkpoint_save_every_rounds,
                         }
         """
-        if not type(total_steps) is int or total_steps <= 0:
-            raise ValueError(f"total_steps必须为大于0的整数喵! 现在是: {total_steps}")
-        if not type(log_every_steps) is int or log_every_steps <= 0:
-            raise ValueError(f"log_every_steps必须为大于0的整数喵! 现在是: {log_every_steps}")
-        if not type(accumulation_steps) is int or accumulation_steps <= 0:
-            raise ValueError(f"accumulation_steps必须为大于0的整数喵! 现在是: {accumulation_steps}")
-        if not type(validation_enabled) is bool:
-            raise ValueError(f"validation_enabled必须为bool类型的喵! 现在的type: {type(validation_enabled)}")
-        if validation_enabled:
-            if valid_dataloader is None:
-                raise ValueError(f"valid_dataloader在validation_enabled时不能为空喵!")
-            if not type(validation_every_steps) is int or validation_every_steps <= 0:
-                raise ValueError(f"validation_every_steps必须为正整数喵! 现在是: {validation_every_steps}")
-            if not type(early_stopping_patience) is int or early_stopping_patience <= 0:
-                raise ValueError(f"early_stopping_patience必须为正整数喵! 现在是: {early_stopping_patience}")
-        if checkpoints_dir is None and checkpoint_save_every_rounds is None:
-            save_ckpt = False
-        elif checkpoints_dir is None and checkpoint_save_every_rounds is not None:
-                raise ValueError(f"checkpoints_dir 和 checkpoint_save_every_rounds 不能一个为空一个不为空喵!")
-        elif checkpoints_dir is not None and checkpoint_save_every_rounds is None:
-                raise ValueError(f"checkpoints_dir 和 checkpoint_save_every_rounds 不能一个为空一个不为空喵!")
-        else:
-            if not isinstance(checkpoints_dir, (str, pathlib.Path)):
-                raise ValueError(f"checkpoints_dir 必须为字符串类型或者pathlib.Path类型的喵! 现在的type: {type(checkpoints_dir)}")
-            if isinstance(checkpoints_dir, str):
-                if not checkpoints_dir.strip():
-                    raise ValueError(f"当 checkpoints_dir 为字符串类型时不能为空喵!")
-            checkpoints_dir = pathlib.Path(checkpoints_dir)
-            if not checkpoints_dir.exists():
-                raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的路径不存在喵!")
-            if not checkpoints_dir.is_dir():
-                raise ValueError(f"checkpoints_dir: {checkpoints_dir} 指向的必须为目录喵!")
-            if not type(checkpoint_save_every_rounds) is int or checkpoint_save_every_rounds <= 0:
-                raise ValueError(f"checkpoint_save_every_rounds: {checkpoint_save_every_rounds} 必须为正整数喵!")
-            save_ckpt = True
+        context = self.runtime_context
+        def check_fit_options():
+            if not type(total_steps) is int or total_steps <= 0:
+                raise ValueError(f"total_steps必须为大于0的整数喵! 现在是: {total_steps}")
+            if not type(log_every_steps) is int or log_every_steps <= 0:
+                raise ValueError(f"log_every_steps必须为大于0的整数喵! 现在是: {log_every_steps}")
+            if not type(accumulation_steps) is int or accumulation_steps <= 0:
+                raise ValueError(f"accumulation_steps必须为大于0的整数喵! 现在是: {accumulation_steps}")
+            if not type(validation_enabled) is bool:
+                raise ValueError(f"validation_enabled必须为bool类型的喵! 现在的type: {type(validation_enabled)}")
+            if validation_enabled:
+                if valid_dataloader is None and context.is_main:
+                    raise ValueError(f"valid_dataloader在validation_enabled时不能为空喵!")
+                if not type(validation_every_steps) is int or validation_every_steps <= 0:
+                    raise ValueError(f"validation_every_steps必须为正整数喵! 现在是: {validation_every_steps}")
+                if early_stopping_patience is not None and (type(early_stopping_patience) is not int or early_stopping_patience <= 0):
+                    raise ValueError(f"early_stopping_patience必须为正整数喵! 现在是: {early_stopping_patience}")
+                if (checkpoints_dir is None) != (checkpoint_save_every_rounds is None):
+                    raise ValueError(
+                        "checkpoints_dir 与 checkpoint_save_every_rounds "
+                        "必须同时为 None 或同时非 None 喵!\n"
+                        f"checkpoints_dir: {checkpoints_dir!r}\n"
+                        f"checkpoint_save_every_rounds: {checkpoint_save_every_rounds!r}"
+                    )
 
-        reset_peak_memory_stats(self.device_summary)
-        self.train_metric_collection.reset()
+                directory = None
 
-        total_loss = 0.0                            # 总损失
-        last_loss = None                            # 上轮损失
-        accumulated_batches = 0                     # 上次参数更新后，积累的batch数
-        current_cycle_size = None                   # 当前进行梯度积累需要的batch数
-        last_validation_summary = None              # 最近一次验证返回的内容
-        completed_micro_steps = 0                   # 完成的micro batch数，与total_loss保持同步
-        early_stopped = False                       # 是否早停提前结束
-        losses_dict = {}                            # losses的各项信息的字典
-        last_train_metric_output = None             # 上次训练指标计算的输出
-        interval_total_loss = 0.0                   # 某一训练区间内总损失
-        interval_completed_micro_steps = 0          # 某一训练区间内完成的micro batch数
-        interval_losses_dict = {}                   # 某一训练区间内losses的各项信息的字典
-        interval_avg_loss = 0.0                     # 某一训练区间内的平均损失
-        last_interval_avg_loss = None               # 某一训练区间内的上次训练的平均损失
-        last_interval_losses_dict = None            # 某一训练区间内的上次训练损失字典
+                if checkpoints_dir is not None:
+                    if not isinstance(checkpoints_dir, (str, pathlib.Path)):
+                        raise TypeError(
+                            "checkpoints_dir 必须为 str 或 pathlib.Path 喵! "
+                            f"当前类型为 {type(checkpoints_dir)}"
+                        )
+
+                    if isinstance(checkpoints_dir, str) and not checkpoints_dir.strip():
+                        raise ValueError("checkpoints_dir 不能是空字符串或全空白字符串喵!")
+
+                    directory = pathlib.Path(checkpoints_dir)
+                    if not directory.is_dir():
+                        raise ValueError(
+                            f"checkpoints_dir 必须指向已经存在的目录喵! 当前路径: {directory}"
+                        )
+
+                    if type(checkpoint_save_every_rounds) is not int or checkpoint_save_every_rounds <= 0:
+                        raise ValueError(
+                            "checkpoint_save_every_rounds 必须为正整数喵! "
+                            f"当前值: {checkpoint_save_every_rounds!r}"
+                        )
+
+                validation_options = {
+                    'patience': early_stopping_patience if validation_enabled else None,
+                }
+
+                checkpoint_options = {
+                    'enabled': checkpoints_dir is not None,
+                    'save_every_rounds': checkpoint_save_every_rounds,
+                    'directory': directory,
+                }
+
+                settings = {
+                    'total_steps': total_steps,
+                    'log_every_steps': log_every_steps,
+                    'accumulation_steps': accumulation_steps,
+                    'validation_enabled': validation_enabled,
+                    'validation_every_steps': validation_every_steps,
+                    'early_stopping_patience': early_stopping_patience,
+                    'checkpoint_save_every_rounds': checkpoint_save_every_rounds,
+                    'checkpoint_enabled': checkpoint_options['enabled'],
+                    'checkpoint_directory': str(directory) if directory is not None else None,
+                    'progress': self.get_training_progress(),
+                    'data_epoch': self.data_epoch,
+                    'precision': self.precision.precision,
+                }
+                return (validation_options,checkpoint_options,settings)
+
+        validation_options, checkpoint_options, settings = context.run_local('检查训练循环参数', check_fit_options)
+        if context.enabled:
+            settings_list = [None] * context.world_size
+            dist.all_gather_object(settings_list, settings)
+            reference = settings_list[0]
+
+            for rank, rank_settings in enumerate(settings_list):
+                missing_keys = set(reference) - set(rank_settings)
+                extra_keys = set(rank_settings) - set(reference)
+
+                if missing_keys or extra_keys:
+                    raise ValueError(
+                        f"训练设置字段不一致喵! rank {rank} 相对于 rank 0：\n"
+                        f"缺失字段: {sorted(missing_keys)}\n"
+                        f"多余字段: {sorted(extra_keys)}"
+                    )
+
+                for key in sorted(reference):
+                    reference_value = reference[key]
+                    rank_value = rank_settings[key]
+
+                    if rank_value != reference_value:
+                        raise ValueError(
+                            f"训练设置不一致喵! 字段: {key!r}；"
+                            f"rank 0 的值: {reference_value!r}；"
+                            f"rank {rank} 的值: {rank_value!r}"
+                        )
+
+        if self.global_step>=total_steps:
+            summary = self._finish_training(None, None, last_loss=None, last_train_summary=None, last_validation_summary=None, early_stopped=False, checkpoint_options=checkpoint_options, no_training_needed=True)
+            return summary
 
         try:
-            first_batch = next(iter(train_dataloader))
-        except StopIteration:
-            raise ValueError(f"训练出现异常了喵! 现在的train_dataloader为空喵!")
-        self._train_dry_run(first_batch)
-        self._log_info(f"Dry Run 已完成，以下是 Dry Run 显存占用的相关信息")
-        self._log_memory_status()
-        while self.global_step < total_steps:
-            batch_exist = False
-            batch_num = len(train_dataloader)
-            if early_stopped:
-                break
-            for idx, batch in enumerate(train_dataloader):
-                # 在新累积周期的第一个 Batch 前清空上一周期梯度
-                should_zero_grad = accumulated_batches == 0
-                if accumulated_batches == 0:
-                    # 获取未处理的总的batch, 便于进行后续min操作
-                    remaining_batches = batch_num - idx
-                    # 获取当前实际需要处理的batch的数量，因为最后进行处理的batch的长度可能不够accumulation_steps了，所以需要进行min操作，这就是为什么要获取remaining_batches
-                    current_cycle_size = min(accumulation_steps, remaining_batches)
-                # 这里是获取将要处理本次batch后的处理batch数，用于判断是否需要参数更新，而不是刚开始初始化参数的更新
-                next_accumulated_batches = accumulated_batches + 1
-                should_update = next_accumulated_batches == current_cycle_size
-                batch_exist = True
-                output_dict = self.train_step(batch=batch, should_zero_grad=should_zero_grad, should_update=should_update, loss_divisor=current_cycle_size)
-                if not isinstance(output_dict, dict):
-                    raise ValueError(f"output_dict的值应该为dict类型喵! 现在是type: {type(output_dict)}")
-                if not "loss" in output_dict:
-                    raise ValueError(f"output_dict里面不包含loss的键喵!")
-                loss = output_dict["loss"]
-                if not type(loss) in (float, int) or not isfinite(loss):
-                    raise ValueError(f"loss必须为有限浮点数或整数喵! 请检查loss是否为nan喵! loss: {loss}")
-                if not "losses" in output_dict:
-                    raise ValueError(f"output_dict里面不包含losses的键喵!")
-                if not isinstance(output_dict["losses"], dict):
-                    raise ValueError(f"output_dict的losses必须为dict类型的喵!")
-                if not output_dict["losses"]:
-                    raise ValueError(f"output_dict的losses不能为空喵!")
+            initial_global_step = self.global_step
+            if self.device.type == 'cuda':
+                def reset_local():
+                    reset_peak_memory_stats(self.device_summary)
+                context.run_local("重置本次训练显存峰值", reset_local)
+            run_accumulator = LossAccumulator()
+            interval_accumulator = LossAccumulator()
+            last_loss = None
+            last_train_summary = None
+            last_validation_summary = None
+            early_stopped = False
+            def prepare_training():
+                self.train_metric_collection.reset()
+                batch_num = len(train_dataloader)
+                if not type(batch_num) is int or batch_num <= 0:
+                    raise ValueError(f"batch_num: {batch_num} 必须为正整数喵!")
+                return batch_num
+            batch_num = context.run_local('准备训练统计与长度', prepare_training)
+            if context.enabled:
+                batch_counts = [None] * context.world_size
+                dist.all_gather_object(batch_counts, batch_num)
+                reference = batch_counts[0]
+                for rank, batch_count in enumerate(batch_counts):
+                    if batch_count != reference:
+                        raise ValueError(f"各进程的batch_count不一致喵!\n"
+                                         f"rank 0 为: {reference}, rank: {rank} 为 {batch_count}\n"
+                                         f"请检查各进程batch_count是否一致")
+            def prepare_dry_run():
+                if context.enabled:
+                    if not isinstance(train_dataloader.sampler,DistributedSampler):
+                        raise TypeError(f"train_dataloader.sampler: {train_dataloader.sampler} 必须为 DistributedSampler 类型的喵! 现在的type: {type(train_dataloader.sampler)}")
+                    train_dataloader.sampler.set_epoch(self.data_epoch)
+                dry_iterator = iter(train_dataloader)
+                dry_batch = next(dry_iterator)
+                moved_batch = self._transfer_batch_device(dry_batch)
+                self.train_task.train()
+                self.optimizer.zero_grad(set_to_none=True)
+                return moved_batch
 
-                self.micro_step += 1
-                completed_micro_steps += 1
-                accumulated_batches += 1
-                total_loss += loss
-                last_loss = loss
-                avg_loss = total_loss / completed_micro_steps
-                interval_total_loss += loss
-                interval_completed_micro_steps += 1
-                interval_avg_loss = interval_total_loss / interval_completed_micro_steps
-                if losses_dict and not set(output_dict["losses"].keys()) == set(losses_dict.keys()):
-                    raise ValueError(f"output_dict与losses_dict之间的字段不一致喵!")
-                for loss_name, loss_info in output_dict["losses"].items():
-                    raw = loss_info["raw"]
-                    weighted = loss_info["weighted"]
-                    weight = loss_info["weight"]
+            primary_error = None
 
-                    if loss_name not in losses_dict:
-                        losses_dict[loss_name] = {
-                            "raw": 0.0,
-                            "weighted": 0.0,
-                            "weight": weight,
-                        }
-                    else:
-                        if not losses_dict[loss_name]["weight"] == loss_info["weight"]:
-                            raise ValueError(f"{loss_name} 的权重出现变化了喵! 现在是: {loss_info['weight']} 应该是: {losses_dict[loss_name]['weight']}")
-                    losses_dict[loss_name]["raw"] += raw
-                    losses_dict[loss_name]["weighted"] += weighted
+            try:
+                dry_batch = context.run_local(
+                    '准备试运行批次',
+                    prepare_dry_run,
+                )
+                self._forward_backward(
+                    dry_batch,
+                    loss_divisor=1,
+                    synchronize=True,
+                )
 
-                    if loss_name not in interval_losses_dict:
-                        interval_losses_dict[loss_name] = {
-                            "raw": 0.0,
-                            "weighted": 0.0,
-                            "weight": weight,
-                        }
-                    else:
-                        if not interval_losses_dict[loss_name]["weight"] == loss_info["weight"]:
-                            raise ValueError(f"{loss_name} 的权重出现变化了喵! 现在是: {loss_info['weight']} 应该是: {interval_losses_dict[loss_name]['weight']}")
-                    interval_losses_dict[loss_name]["raw"] += raw
-                    interval_losses_dict[loss_name]["weighted"] += weighted
+            except Exception as error:
+                primary_error = error
+                self._report_local_cuda_oom(error, 'dry_run')
 
-                if should_update:
-                    self.global_step += 1
+                raise
+
+            finally:
+                try:
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                except Exception as cleanup_error:
+                    if primary_error is None:
+                        raise
+
+                    try:
+                        primary_error.add_note(
+                            f"试运行失败后，清理梯度也发生异常："
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
+                    except Exception:
+                        pass
+
+            self._log_memory_status('dry_run')
+            def make_iterator():
+                sampler = train_dataloader.sampler
+
+                if isinstance(sampler, DistributedSampler):
+                    sampler.set_epoch(self.data_epoch)
+
+                created_iterator = iter(train_dataloader)
+                return created_iterator
+
+            def read_batch():
+                try:
+                    batch = next(iterator)
+                except StopIteration as error:
+                    raise RuntimeError(
+                        f"训练数据提前结束喵! "
+                        f"本轮预期 {batch_num} 个 batch，"
+                        f"已处理 {idx} 个，"
+                        f"读取第 {idx + 1} 个时迭代器已经耗尽。"
+                    ) from error
+
+                return batch
+
+            while self.global_step < total_steps and not early_stopped:
+                iterator = context.run_local('建立本轮数据迭代器', make_iterator)
+                idx = 0
+                while idx < batch_num and self.global_step < total_steps and not early_stopped:
+                    current_cycle_size = min(accumulation_steps, batch_num - idx)
                     accumulated_batches = 0
+                    while accumulated_batches < current_cycle_size:
+                        batch = context.run_local('读取训练批次',read_batch)
+                        should_zero_grad = accumulated_batches == 0
+                        should_update = accumulated_batches + 1 == current_cycle_size
+                        step_result = self.train_step(batch, should_zero_grad=should_zero_grad, should_update=should_update, loss_divisor=current_cycle_size)
+                        last_loss = self._record_train_step(step_result, should_update=should_update, run_accumulator=run_accumulator, interval_accumulator=interval_accumulator)
+                        idx += 1
+                        accumulated_batches += 1
+                    if not step_result['did_update']:
+                        pass
+                    else:
+                        needs_validation = self.global_step % validation_every_steps==0 or self.global_step>=total_steps if validation_enabled else False
+                        needs_log = self.global_step % log_every_steps == 0
+                        first_update = (
+                                self.global_step == initial_global_step + 1
+                        )
 
-                    should_validate = validation_enabled and (self.global_step % validation_every_steps == 0 or self.global_step >= total_steps)
+                        if first_update or needs_log:
+                            self._log_memory_status('train')
 
-                    if self.global_step % log_every_steps == 0:
-                        progress = self.global_step / total_steps * 100
-                        current_lr = self._get_current_lr()
-                        self._log_info(f"iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {interval_avg_loss:.6f}, lr: {current_lr:.6f}")
-                        self._log_memory_status()
-
-                    if should_validate:
-                        last_train_metric_output = self.train_metric_collection.compute()
-                        last_validation_summary = self.validate(valid_dataloader)
-                        train_metric_row = {
-                            "global_step": self.global_step,
-                            "avg_loss": avg_loss,
-                            "interval_avg_loss": interval_avg_loss,
-                            "lr": self._get_current_lr(),
-                        }
-                        for loss_name, loss_info in losses_dict.items():
-                            loss_raw_fieldname = f"{loss_name}_avg_raw"
-                            loss_weighted_fieldname = f"{loss_name}_avg_weighted_loss"
-                            avg_raw = loss_info["raw"] / completed_micro_steps
-                            avg_weighted = loss_info["weighted"] / completed_micro_steps
-                            train_metric_row[loss_raw_fieldname] = avg_raw
-                            train_metric_row[loss_weighted_fieldname] = avg_weighted
-                        for loss_name, loss_info in interval_losses_dict.items():
-                            loss_raw_fieldname = f"{loss_name}_interval_avg_raw"
-                            loss_weighted_fieldname = f"{loss_name}_interval_avg_weighted_loss"
-                            interval_avg_raw = loss_info["raw"] / interval_completed_micro_steps
-                            interval_avg_weighted_loss = loss_info["weighted"] / interval_completed_micro_steps
-                            train_metric_row[loss_raw_fieldname] = interval_avg_raw
-                            train_metric_row[loss_weighted_fieldname] = interval_avg_weighted_loss
-                        for metric_key, metric_value in last_train_metric_output.items():
-                            train_metric_row[metric_key] = metric_value
-                        self.train_metrics_writer.write(train_metric_row)
-                        last_validation_summary["train_metrics"] = last_train_metric_output
-                        self._log_info(f"train_metrics: {last_train_metric_output}\n"
-                                       f"valid_metrics: {last_validation_summary['valid_metrics']}")
-                        last_interval_avg_loss = interval_avg_loss
-                        last_interval_losses_dict = interval_losses_dict
-                        interval_total_loss = 0.0
-                        avg_interval_losses_dict = {}
-                        for loss_name, loss_info in last_interval_losses_dict.items():
-                            avg_interval_losses_dict[loss_name] = {
-                                'avg_raw': loss_info['raw'] / interval_completed_micro_steps,
-                                'avg_weighted_loss': loss_info['weighted'] / interval_completed_micro_steps,
-                                'weight': loss_info['weight'],
-                            }
-                        interval_completed_micro_steps = 0
-                        interval_losses_dict = {}
-                        interval_avg_loss = 0.0
-                        self.train_metric_collection.reset()
-                        self.completed_validations += 1
-                        current_validation_loss = last_validation_summary["avg_loss"]
-                        if self.best_validation_loss is None or current_validation_loss < self.best_validation_loss:
-                            self.best_validation_loss = current_validation_loss
-                            self.validation_rounds_without_improvement = 0
-                            if save_ckpt:
-                                state_dict = build_checkpoint(
-                                    task=self.task,
-                                    optimizer=self.optimizer,
-                                    scheduler=self.scheduler,
-                                    trainer=self,
-                                )
-                                best_checkpoint_path = checkpoints_dir / "best.pt"
-                                save_checkpoint(state_dict, best_checkpoint_path)
-                                progress = self.global_step / total_steps * 100
-                                current_lr = self._get_current_lr()
-                                self._log_info(f"checkpoint: best.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
-                        else:
-                            self.validation_rounds_without_improvement += 1
-                        if self.validation_rounds_without_improvement >= early_stopping_patience:
-                            early_stopped = True
-                            progress = self.global_step / total_steps * 100
-                            current_lr = self._get_current_lr()
-                            self._log_info(f"early_stopped, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
-
-                        if save_ckpt and self.completed_validations % checkpoint_save_every_rounds == 0:
-                            state_dict = build_checkpoint(
-                                task=self.task,
-                                optimizer=self.optimizer,
-                                scheduler=self.scheduler,
-                                trainer=self,
-                            )
-                            last_checkpoint_path = checkpoints_dir / "last.pt"
-                            save_checkpoint(state_dict, last_checkpoint_path)
-                            progress = self.global_step / total_steps * 100
-                            current_lr = self._get_current_lr()
-                            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr}")
-
-                if self.global_step >= total_steps:
-                    break
-                if early_stopped:
-                    break
-
-            if not batch_exist:
-                raise ValueError(f"训练出现异常喵! dataloader为空喵! ")
-
-        if not validation_enabled:
-            last_train_metric_output = self.train_metric_collection.compute()
-            train_metric_row = {
-                "global_step": self.global_step,
-                "avg_loss": avg_loss,
-                "interval_avg_loss": interval_avg_loss,
-                "lr": self._get_current_lr(),
-            }
-            for loss_name, loss_info in losses_dict.items():
-                loss_raw_fieldname = f"{loss_name}_avg_raw"
-                loss_weighted_fieldname = f"{loss_name}_avg_weighted_loss"
-                avg_raw = loss_info["raw"] / completed_micro_steps
-                avg_weighted = loss_info["weighted"] / completed_micro_steps
-                train_metric_row[loss_raw_fieldname] = avg_raw
-                train_metric_row[loss_weighted_fieldname] = avg_weighted
-            for loss_name, loss_info in interval_losses_dict.items():
-                loss_raw_fieldname = f"{loss_name}_interval_avg_raw"
-                loss_weighted_fieldname = f"{loss_name}_interval_avg_weighted_loss"
-                interval_avg_raw = loss_info["raw"] / interval_completed_micro_steps
-                interval_avg_weighted_loss = loss_info["weighted"] / interval_completed_micro_steps
-                train_metric_row[loss_raw_fieldname] = interval_avg_raw
-                train_metric_row[loss_weighted_fieldname] = interval_avg_weighted_loss
-            for metric_key, metric_value in last_train_metric_output.items():
-                train_metric_row[metric_key] = metric_value
-            self.train_metrics_writer.write(train_metric_row)
-            self._log_info(f"train_metrics: {last_train_metric_output}")
-            last_interval_avg_loss = interval_avg_loss
-            last_interval_losses_dict = interval_losses_dict
-            avg_interval_losses_dict = {}
-            for loss_name, loss_info in last_interval_losses_dict.items():
-                avg_interval_losses_dict[loss_name] = {
-                    'avg_raw': loss_info['raw'] / interval_completed_micro_steps,
-                    'avg_weighted_loss': loss_info['weighted'] / interval_completed_micro_steps,
-                    'weight': loss_info['weight'],
-                }
-            interval_total_loss = 0.0
-            interval_completed_micro_steps = 0
-            interval_losses_dict = {}
-            interval_avg_loss = 0.0
-            self.train_metric_collection.reset()
-
-        if save_ckpt:
-            state_dict = build_checkpoint(
-                task=self.task,
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-                trainer=self,
-            )
-            last_checkpoint_path = checkpoints_dir / "last.pt"
-            save_checkpoint(state_dict, last_checkpoint_path)
-            progress = self.global_step / total_steps * 100
-            current_lr = self._get_current_lr()
-            self._log_info(f"checkpoint: last.pt, iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
-
-        if not self.global_step % log_every_steps == 0:
-            progress = self.global_step / total_steps * 100
-            current_lr = self._get_current_lr()
-            self._log_info(f"iters: {self.global_step}/{total_steps} ({progress:.2f}%), micro_step: {self.micro_step}, loss: {loss:.6f}, avg_loss: {avg_loss:.6f}, interval_avg_loss: {last_interval_avg_loss:.6f}, lr: {current_lr:.6f}")
-            self._log_memory_status()
-
-        avg_losses_dict = {}
-        for loss_name, loss_info in losses_dict.items():
-            avg_losses_dict[loss_name] = {
-                'avg_raw': loss_info["raw"] / completed_micro_steps,
-                'avg_weighted_loss': loss_info["weighted"] / completed_micro_steps,
-                'weight': loss_info["weight"],
-            }
-
-        self._log_memory_status()
-
-        summary_dict = {
-                            "completed_iters": self.global_step,
-                            "global_step": self.global_step,
-                            "micro_step": self.micro_step,
-                            "avg_loss": avg_loss,
-                            "last_loss": last_loss,
-                            "losses": avg_losses_dict,
-                            "last_interval_losses": avg_interval_losses_dict,
-                            "completed_validations": self.completed_validations,
-                            "last_validation_summary": last_validation_summary,
-                            "best_validation_loss": self.best_validation_loss,
-                            "validation_rounds_without_improvement": self.validation_rounds_without_improvement,
-                            "early_stopped": early_stopped,
-                            "train_metrics": last_train_metric_output,
-                            "last_interval_avg_loss": last_interval_avg_loss,
-                        }
-
-        return summary_dict
+                        if needs_validation:
+                            train_summary = self._collect_train_summary(run_accumulator, interval_accumulator, include_metrics=True)
+                            event_result = self._validation_event(valid_dataloader, train_summary, interval_accumulator, validation_options, checkpoint_options)
+                            last_train_summary = train_summary
+                            last_validation_summary = event_result['validation_summary']
+                            early_stopped = event_result['early_stopped']
+                            self._log_memory_status('validation')
+                            if needs_log:
+                                def log_event():
+                                    message = f"step={self.global_step}, loss={train_summary['run']['avg_loss']}, interval_loss={train_summary['interval']['avg_loss']}, lr={self._get_current_lr()}"
+                                    self._log_info(message)
+                                    return None
+                                context.run_main('记录训练摘要', log_event)
+                        elif needs_log:
+                            log_summary = self._collect_train_summary(run_accumulator, interval_accumulator, include_metrics=False)
+                            def log_only():
+                                message = f"step={self.global_step}, loss={log_summary['run']['avg_loss']}, interval_loss={log_summary['interval']['avg_loss']}, lr={self._get_current_lr()}"
+                                self._log_info(message)
+                                return None
+                            context.run_main('记录训练摘要', log_only)
+                if self.global_step<total_steps and not early_stopped:
+                    self.data_epoch += 1
+            summary = self._finish_training(run_accumulator, interval_accumulator, last_loss=last_loss,
+                                        last_train_summary=last_train_summary,
+                                        last_validation_summary=last_validation_summary, early_stopped=early_stopped,
+                                        checkpoint_options=checkpoint_options, no_training_needed=False)
+            return summary
+        except Exception as error:
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+            except Exception as cleanup_error:
+                error.add_note(str(cleanup_error))
+            raise
 
     def get_training_progress(self):
         """
@@ -786,6 +1115,9 @@ class Trainer:
             "completed_validations": self.completed_validations,
             "best_validation_loss": self.best_validation_loss,
             "validation_rounds_without_improvement": self.validation_rounds_without_improvement,
+            "update_attempts": self.update_attempts,
+            "skipped_updates": self.skipped_updates,
+            "consecutive_skipped_updates": self.consecutive_skipped_updates
         }
         return training_dict
 
@@ -795,63 +1127,184 @@ class Trainer:
         :param training_dict: 训练状态参数
         :return:
         """
-        if not isinstance(training_dict, dict):
-            raise ValueError(f"传入的 training_dict 必须为dict类型的喵! 现在的type: {type(training_dict)}")
-        if not training_dict:
-            raise ValueError(f"传入的 training_dict 不能为空喵!")
-        if "global_step" not in training_dict:
-            raise ValueError(f"传入的 training_dict 不包含 global_step 字段喵!")
-        if "micro_step" not in training_dict:
-            raise ValueError(f"传入的 training_dict 不包含 micro_step 字段喵!")
-        if "completed_validations" not in training_dict:
-            raise ValueError(f"传入的 training_dict 不包含 completed_validations 字段喵!")
-        if "best_validation_loss" not in training_dict:
-            raise ValueError(f"传入的 training_dict 不包含 best_validation_loss 字段喵!")
-        if "validation_rounds_without_improvement" not in training_dict:
-            raise ValueError(f"传入的 training_dict 不包含 validation_rounds_without_improvement 字段喵!")
 
-        global_step = training_dict["global_step"]
-        micro_step = training_dict["micro_step"]
-        completed_validations = training_dict["completed_validations"]
-        best_validation_loss = training_dict["best_validation_loss"]
-        validation_rounds_without_improvement = training_dict["validation_rounds_without_improvement"]
+        validated_progress = _validate_training_progress(training_dict)
 
-        allowed_keys = {
-            "global_step",
-            "micro_step",
-            "completed_validations",
-            "best_validation_loss",
-            "validation_rounds_without_improvement",
-        }
-
-        if not type(global_step) is int or global_step < 0:
-            raise ValueError(f"global_step: {global_step} 必须为非负整数喵!")
-        if not type(micro_step) is int or micro_step < 0:
-            raise ValueError(f"micro_step: {micro_step} 必须为非负整数喵!")
-        if not type(completed_validations) is int or completed_validations < 0:
-            raise ValueError(f"completed_validations: {completed_validations} 必须为非负整数喵!")
-        if best_validation_loss is not None:
-            if not type(best_validation_loss) in (float, int) or not isfinite(best_validation_loss):
-                raise ValueError(f"best_validation_loss: {best_validation_loss} 必须为None或者有限数值喵!")
-        if not type(validation_rounds_without_improvement) is int or validation_rounds_without_improvement < 0:
-            raise ValueError(f"validation_rounds_without_improvement: {validation_rounds_without_improvement} 必须为非负整数喵!")
-        # 跨字段检查
-        if micro_step < global_step:
-            raise ValueError(f"micro_step: {micro_step} 不能小于 global_step: {global_step} 喵!")
-        if validation_rounds_without_improvement > completed_validations:
-            raise ValueError(f"completed_validations: {completed_validations} 不能小于 validation_rounds_without_improvement: {validation_rounds_without_improvement} 喵!")
-        if completed_validations == 0 and best_validation_loss is not None:
-            raise ValueError("completed_validations 为 0 时，best_validation_loss 必须为 None 喵!")
-        if completed_validations > 0 and best_validation_loss is None:
-            raise ValueError("completed_validations 大于 0 时，best_validation_loss 不能为 None 喵!")
-
-        extra_keys = training_dict.keys() - allowed_keys
-
-        if extra_keys:
-            raise ValueError(f"training_dict 里面出现了未知的字段喵: {extra_keys}")
+        global_step = validated_progress["global_step"]
+        micro_step = validated_progress["micro_step"]
+        completed_validations = validated_progress["completed_validations"]
+        best_validation_loss = validated_progress["best_validation_loss"]
+        validation_rounds_without_improvement = validated_progress["validation_rounds_without_improvement"]
+        update_attempts = validated_progress["update_attempts"]
+        skipped_updates = validated_progress["skipped_updates"]
+        consecutive_skipped_updates = validated_progress["consecutive_skipped_updates"]
 
         self.global_step = global_step
         self.micro_step = micro_step
         self.completed_validations = completed_validations
         self.best_validation_loss = best_validation_loss
         self.validation_rounds_without_improvement = validation_rounds_without_improvement
+        self.update_attempts = update_attempts
+        self.skipped_updates = skipped_updates
+        self.consecutive_skipped_updates = consecutive_skipped_updates
+
+    def _collect_memory_record(self, stage):
+        if not isinstance(stage, str):
+            raise TypeError(f"stage: {stage} 必须为str类型的喵! 现在的type: {type(stage)}")
+        if not stage.strip():
+            raise ValueError(f"stage 不能为空喵!")
+        allowed_stages = ["dry_run", "train", "validation", "finish"]
+        if stage not in allowed_stages:
+            raise ValueError(f"当前stage: {stage} 不被允许喵! 允许的stage: {allowed_stages}")
+        if self.device.type == 'cpu':
+            return None
+        elif self.device.type == 'cuda':
+            summary = self.device_summary
+            if not isinstance(summary, dict):
+                raise TypeError(f"summary: {summary} 必须为dict类型的喵! 现在的type: {type(summary)}")
+            if not 'backend' in summary:
+                raise ValueError(f"summary: {summary} 中缺少了 backend 字段喵!")
+            if not 'gpu_nums' in summary:
+                raise ValueError(f"summary: {summary} 中缺少了 gpu_nums 字段喵!")
+            if not 'device_index' in summary:
+                raise ValueError(f"summary: {summary} 中缺少了 device_index 字段喵!")
+            backend = summary['backend']
+            gpu_nums = summary['gpu_nums']
+            device_index = summary['device_index']
+            if not backend == 'cuda':
+                raise ValueError(f"device_type: {self.device.type} 为cuda时, backend: {backend} 必须为cuda喵!")
+            if not type(gpu_nums) is int or not gpu_nums == 1:
+                raise ValueError(f"gpu_nums: {gpu_nums} 必须严格等于1喵!")
+            if not type(device_index) is int or device_index < 0:
+                raise ValueError(f"device_index: {device_index} 必须为非负整数喵!")
+            if self.device.index is not None:
+                if self.device.index != device_index:
+                    raise ValueError(f"device.index: {self.device.index} 必须与device_index: {device_index} 相等喵!")
+            memory = get_memory_summary(summary)
+            if not isinstance(memory, dict):
+                raise TypeError(f"memory: {memory} 必须为dict类型的喵! 现在的type: {type(memory)}")
+            memory_backend = memory['backend']
+            memory_gpu_nums = memory['gpu_nums']
+            memory_device_index = memory['device_index']
+            if not memory_backend == 'cuda':
+                raise ValueError(f"memory_backend: {memory_backend} 必须为cuda喵!")
+            if not type(memory_gpu_nums) is int or not memory_gpu_nums == 1:
+                raise ValueError(f"memory_gpu_nums: {memory_gpu_nums} 必须为1喵!")
+            if not memory_device_index == device_index:
+                raise ValueError(f"memory_device_index: {memory_device_index} 必须与 device_index: {device_index} 相等喵!")
+            if not 'allocated_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 allocated_memory 字段喵!")
+            allocated_memory = memory['allocated_memory']
+            if not 'reserved_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 reserved_memory 字段喵!")
+            reserved_memory = memory['reserved_memory']
+            if not 'max_allocated_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 max_allocated_memory 字段喵!")
+            max_allocated_memory = memory['max_allocated_memory']
+            if not 'max_reserved_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 max_reserved_memory 字段喵!")
+            max_reserved_memory = memory['max_reserved_memory']
+            if not 'free_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 free_memory 字段喵!")
+            free_memory = memory['free_memory']
+            if not 'total_memory' in memory:
+                raise ValueError(f"memory: {memory} 缺少了 total_memory 字段喵!")
+            total_memory = memory['total_memory']
+            if not type(allocated_memory) is int:
+                raise TypeError(f"allocated_memory: {allocated_memory} 必须为int类型的喵! 现在的type: {type(allocated_memory)}")
+            if not type(reserved_memory) is int:
+                raise TypeError(f"reseved_memory: {reserved_memory} 必须为int类型的喵! 现在的type: {type(reserved_memory)}")
+            if not type(max_allocated_memory) is int:
+                raise TypeError(f"max_allocated_memory: {max_allocated_memory} 必须为int类型的喵! 现在的type: {type(max_allocated_memory)}")
+            if not type(max_reserved_memory) is int:
+                raise TypeError(f"max_reserved_memory: {max_reserved_memory} 必须为int类型的喵! 现在的type: {type(max_reserved_memory)}")
+            if not type(free_memory) is int:
+                raise TypeError(f"free_memory: {free_memory} 必须为int类型的喵! 现在的type: {type(free_memory)}")
+            if not type(total_memory) is int:
+                raise TypeError(f"total_memory: {total_memory} 必须为int类型的喵! 现在的type: {type(total_memory)}")
+            if not total_memory > 0:
+                raise ValueError(f"total_memory: {total_memory} 必须大于0喵!")
+            if not allocated_memory >= 0:
+                raise ValueError(f"allocated_memory: {allocated_memory} 必须为非负数喵!")
+            if not reserved_memory >= 0:
+                raise ValueError(f"reserved_memory: {reserved_memory} 必须为非负数喵!")
+            if not max_allocated_memory >= 0:
+                raise ValueError(f"max_allocated_memory: {max_allocated_memory} 必须为非负数喵!")
+            if not max_reserved_memory >= 0:
+                raise ValueError(f"max_reserved_memory: {max_reserved_memory} 必须为非负数喵!")
+            if not free_memory >= 0:
+                raise ValueError(f"free_memory: {free_memory} 必须为非负数喵!")
+            warning = get_memory_warning(memory, warning_threshold=0.9)
+            if not isinstance(warning, dict):
+                raise TypeError(f"warning: {warning} 必须为dict类型的喵! 现在的type: {type(warning)}")
+            record = {
+                'stage': stage,
+                'rank': self.runtime_context.rank,
+                'device_index': memory_device_index,
+                'global_step': self.global_step,
+                'micro_step': self.micro_step,
+                'precision': self.precision.precision,
+                'memory': memory,
+                'warning': warning,
+            }
+            return record
+        else:
+            raise ValueError(f"当前框架只支持cpu与cuda喵!")
+
+    def _write_memory_records(self, records):
+        if not isinstance(records, list):
+            raise TypeError(f"records: {records} 必须为 list 类型的喵! 现在的type: {type(records)}")
+        if not records:
+            raise ValueError(f"records 不能为空喵!")
+        lines = []
+        for record in records:
+            stage = record['stage']
+            rank = record['rank']
+            device_index = record['device_index']
+            global_step = record['global_step']
+            micro_step = record['micro_step']
+            precision = record['precision']
+            memory = record['memory']
+            warning = record['warning']
+            allocated_gib = memory['allocated_memory'] / (1024 ** 3)
+            reserved_gib = memory['reserved_memory'] / (1024 ** 3)
+            peak_allocated_gib = memory['max_allocated_memory'] / (1024 ** 3)
+            peak_reserved_gib = memory['max_reserved_memory'] / (1024 ** 3)
+            free_gib = memory['free_memory'] / (1024 ** 3)
+            total_gib = memory['total_memory'] / (1024 ** 3)
+
+            message = (
+                f"memory "
+                f"stage={stage} "
+                f"rank={rank} "
+                f"device=cuda:{device_index} "
+                f"precision={precision} "
+                f"global_step={global_step} "
+                f"micro_step={micro_step} "
+                f"allocated={allocated_gib:.3f} GiB "
+                f"reserved={reserved_gib:.3f} GiB "
+                f"peak_allocated={peak_allocated_gib:.3f} GiB "
+                f"peak_reserved={peak_reserved_gib:.3f} GiB "
+                f"free={free_gib:.3f} GiB "
+                f"total={total_gib:.3f} GiB"
+            )
+            lines.append(message)
+            if warning['is_warning']:
+                usage_ratio = warning['usage_ratio']
+                warning_threshold = warning['warning_threshold']
+
+                warning_message = (
+                    f"MemoryWarning "
+                    f"stage={stage} "
+                    f"rank={rank} "
+                    f"device=cuda:{device_index} "
+                    f"precision={precision} "
+                    f"global_step={global_step} "
+                    f"micro_step={micro_step} "
+                    f"本次 fit 保留显存累计峰值达到阈值："
+                    f"usage_ratio={usage_ratio:.1%} "
+                    f"warning_threshold={warning_threshold:.1%}"
+                )
+                lines.append(warning_message)
+        for line in lines:
+            self._log_info(line)

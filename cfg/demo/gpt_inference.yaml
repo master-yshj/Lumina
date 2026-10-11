@@ -1,0 +1,31 @@
+version: 2
+
+experiment:
+  name: Demo_GPT_Inference
+  seed: 42
+
+run:
+  mode: inference
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: gptpretrain
+
+inference:
+  max_seq_length: ???
+  max_new_tokens: ???
+  eos_token: ???
+  decoding:
+    type: ???
+    params: ???
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

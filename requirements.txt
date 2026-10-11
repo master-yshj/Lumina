@@ -5,3 +5,5 @@ tqdm==4.67.1
 matplotlib==3.10.8
 plotly==7.0.0
 pytest==9.0.2
+pydantic==2.13.5
+omegaconf==2.3.1

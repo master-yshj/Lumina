@@ -1,0 +1,133 @@
+version: 2
+
+experiment:
+  name: Demo_MLM_Train
+  seed: 42
+
+run:
+  mode: train
+  resume_from: null
+
+task:
+  type: mlmpretrain
+
+components:
+  tokenizer:
+    type: exampletokenizer
+    params:
+      vocab_file_path: ../../tokenizer/demo/vocab.txt
+      do_lower_case: true
+      strip_accents: false
+      max_input_chars_per_word: 100
+  model:
+    type: tinybertformaskedlm
+    params:
+      model_path: ../../models/Transformer
+      hidden_size: 32
+      max_position_embeddings: 64
+      type_vocab_size: 2
+      num_heads: 4
+      intermediate_size: 64
+      num_layers: 1
+      embedding_dropout: 0.0
+      attention_dropout: 0.0
+      hidden_dropout: 0.0
+      layer_norm_eps: 1.0e-12
+    init_from: null
+  losses:
+    - name: mlm_cross_entropy
+      type: cross_entropy
+      weight: 1.0
+      params:
+        ignore_index: -100
+
+data:
+  dataset:
+    type: demo_mlm
+    root: ../../dataset/demo/mlm
+    splits:
+      train: train.jsonl
+      valid: valid.jsonl
+      test: test.jsonl
+    params:
+      max_seq_length: 64
+  loaders:
+    train:
+      batch_size: 2
+      shuffle: true
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    valid:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+    test:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+  collator:
+    type: mlm_collator
+    params:
+      mlm_prob: 0.3
+
+optimization:
+  optimizer:
+    type: adamw
+    params:
+      lr: 0.001
+      weight_decay: 0.01
+      betas:
+        - 0.9
+        - 0.999
+      eps: 1.0e-08
+  scheduler:
+    type: warmup
+    interval: step
+    params:
+      warmup_steps: 1
+      base_scheduler_type: steplr
+      base_scheduler_params:
+        step_size: 2
+        gamma: 0.5
+  loop:
+    total_steps: 100
+    accumulation_steps: 2
+    log_every_steps: 10
+  validation:
+    enabled: true
+    every_steps: 20
+    early_stopping:
+      enabled: true
+      patience: 3
+    checkpoint:
+      save_every_rounds: 10
+
+evaluation:
+  test_after_train: true
+  metrics:
+    train:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+    valid:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+    test:
+      - type: tokenaccuracy
+        params:
+          ignore_index: -100
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

@@ -34,7 +34,9 @@ class Tester:
         else:
             self.logger.info(message)
 
-    def evaluate(self):
+    def evaluate(self, global_step):
+        if not type(global_step) is int or global_step < 0:
+            raise ValueError(f"global_step: {global_step} 必须为非负整数喵!")
         total_loss = 0.0
         last_loss = None
         completed_batches = 0
@@ -130,6 +132,7 @@ class Tester:
             metric_output = self.metric_collection.compute()
 
             summary_dict = {
+                "global_step": global_step,
                 "completed_batches": completed_batches,
                 "last_loss": last_loss,
                 "avg_loss": avg_loss,
@@ -138,7 +141,7 @@ class Tester:
             }
 
             test_metrics_row = {
-                "global_step": 1,
+                "global_step": global_step,
                 "avg_loss": summary_dict["avg_loss"],
             }
             for loss_name, loss_info in summary_dict["losses"].items():

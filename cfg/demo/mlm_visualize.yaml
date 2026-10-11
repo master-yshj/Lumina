@@ -1,0 +1,67 @@
+version: 2
+
+experiment:
+  name: Demo_MLM_Visualize
+  seed: 42
+
+run:
+  mode: visualize
+  checkpoint:
+    path: ???
+    train_config: ???
+
+task:
+  type: mlmpretrain
+
+data:
+  dataset:
+    type: demo_mlm
+    root: ../../dataset/demo/mlm
+    splits:
+      visualize: valid.jsonl
+    params:
+      max_seq_length: 64
+  loaders:
+    visualize:
+      batch_size: 2
+      shuffle: false
+      num_workers: 0
+      pin_memory: false
+      drop_last: false
+  collator:
+    type: mlm_collator
+    params:
+      mlm_prob: 0.3
+
+visualize:
+  methods:
+    - type: attention_heatmap
+      params:
+        layer: 0
+        head: 0
+        max_samples: 1
+    - type: loss_landscape
+      params:
+        normalization: per_parameter
+        output_format: both
+        grid_size: 3
+        alpha_min: -0.5
+        alpha_max: 0.5
+        beta_min: -0.5
+        beta_max: 0.5
+        batch_count: 1
+        losses:
+          - name: mlm_cross_entropy
+            type: cross_entropy
+            weight: 1.0
+            params:
+              ignore_index: -100
+
+runtime:
+  device:
+    type: cpu
+    index: null
+  precision: fp32
+  distributed:
+    strategy: none
+    backend: null

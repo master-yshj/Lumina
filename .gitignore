@@ -6,20 +6,10 @@ logs/
 runs/
 assets/cache/
 
-# Downloaded or generated datasets (keep source scripts)
+# AI 编写: only include the demo dataset
 data/downloads/
-dataset/**/*.json
-dataset/**/*.jsonl
-dataset/**/*.xml
-dataset/**/*.xml/
-dataset/**/*.csv
-dataset/**/*.tsv
-dataset/**/*.parquet
-dataset/**/*.arrow
-dataset/**/*.gz
-dataset/**/*.zip
-dataset/**/*.tar
-dataset/**/*.tar.gz
+/dataset/*
+!/dataset/demo/
 
 # Model weights and checkpoints
 *.pt
@@ -47,3 +37,6 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# AI 编写: local framework checks
+/tests/

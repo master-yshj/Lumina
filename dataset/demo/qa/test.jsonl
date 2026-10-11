@@ -1,0 +1,10 @@
+{"id": "qa_library_07", "topic": "library", "source": "AI 编写：原创中文演示语料", "context": "这本植物图鉴介绍了竹子、松树和银杏。", "question": "图鉴中提到的最后一种植物是什么？", "answers": [{"text": "银杏", "answer_start": 15}]}
+{"id": "qa_animals_02", "topic": "animals", "source": "AI 编写：原创中文演示语料", "context": "阿沐家的小狗喜欢追蓝色皮球，每次都把球叼回门口。", "question": "小狗喜欢追什么？", "answers": [{"text": "蓝色皮球", "answer_start": 9}]}
+{"id": "qa_weather_06", "topic": "weather", "source": "AI 编写：原创中文演示语料", "context": "傍晚雨停后，小涛在东边的天空看见一道彩虹。", "question": "彩虹出现在天空的哪边？", "answers": [{"text": "东边", "answer_start": 9}]}
+{"id": "qa_campus_10", "topic": "campus", "source": "AI 编写：原创中文演示语料", "context": "班级的阅读角靠近后门，那里摆着两个矮书架。", "question": "阅读角靠近哪里？", "answers": [{"text": "后门", "answer_start": 8}]}
+{"id": "qa_garden_07", "topic": "garden", "source": "AI 编写：原创中文演示语料", "context": "爸爸给葡萄搭好木架，又把藤蔓轻轻扶上去。", "question": "爸爸给什么植物搭了木架？", "answers": [{"text": "葡萄", "answer_start": 3}]}
+{"id": "qa_neighborhood_02", "topic": "neighborhood", "source": "AI 编写：原创中文演示语料", "context": "何奶奶出门前，请邻居帮忙照看阳台上的兰花。", "question": "何奶奶请邻居照看什么？", "answers": [{"text": "兰花", "answer_start": 18}]}
+{"id": "qa_sports_05", "topic": "sports", "source": "AI 编写：原创中文演示语料", "context": "游泳课开始前，张教练带大家做了十分钟热身。", "question": "热身持续了多久？", "answers": [{"text": "十分钟", "answer_start": 15}]}
+{"id": "qa_kitchen_02", "topic": "kitchen", "source": "AI 编写：原创中文演示语料", "context": "小可洗好草莓，把它们装进白色的小碗。", "question": "装草莓的小碗是什么颜色？", "answers": [{"text": "白色", "answer_start": 12}]}
+{"id": "qa_crafts_09", "topic": "crafts", "source": "AI 编写：原创中文演示语料", "context": "小墨给贺卡写上祝福，再装进浅蓝色的信封。", "question": "信封是什么颜色？", "answers": [{"text": "浅蓝色", "answer_start": 13}]}
+{"id": "qa_travel_02", "topic": "travel", "source": "AI 编写：原创中文演示语料", "context": "一家人准备去海边，行李箱里装着帽子和毛巾。", "question": "一家人准备去哪里？", "answers": [{"text": "海边", "answer_start": 6}]}

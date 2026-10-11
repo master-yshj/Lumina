@@ -1,3 +1,4 @@
+
 import torch
 
 class QAInference:
@@ -16,6 +17,11 @@ class QAInference:
         self.decoding_strategy = decoding_strategy
         self.max_position_embeddings = max_position_embeddings
         self.doc_stride = doc_stride
+
+    def read_input(self, input_fn=input):
+        context = input_fn("请输入上下文（Ctrl+C 或 Ctrl+D 退出）：")
+        question = input_fn("请输入问题：")
+        return {"context": context, "question": question}
 
     def infer(self, input_data):
         if not isinstance(input_data, dict):

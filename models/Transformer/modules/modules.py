@@ -197,11 +197,15 @@ class AttentionOutput(nn.Module):
         if not attention_output.device == residual_input.device:
             raise ValueError(f"attention_output的设备必须和residual_input的设备相同喵! attention_output.device: {attention_output.device}, residual_input.device: {residual_input.device}")
         if attention_output.dtype != residual_input.dtype:
-            raise ValueError(
-                f"attention_output和residual_input的dtype必须一致喵！"
-                f"attention_output.dtype: {attention_output.dtype}, "
-                f"residual_input.dtype: {residual_input.dtype}"
-            )
+            device_type = attention_output.device.type
+            autocast_enabled = torch.is_autocast_enabled(device_type)
+            allowed_dtypes = (torch.float32, torch.float16, torch.bfloat16)
+            if not autocast_enabled or not attention_output.dtype in allowed_dtypes or not residual_input.dtype in allowed_dtypes:
+                raise ValueError(
+                    f"attention_output和residual_input的dtype必须一致喵！"
+                    f"attention_output.dtype: {attention_output.dtype}, "
+                    f"residual_input.dtype: {residual_input.dtype}"
+                )
         if not attention_output.shape == residual_input.shape:
             raise ValueError(f"attention_output的形状必须和residual_input的形状相同喵! attention_output.shape: {attention_output.shape}, residual_input.shape: {residual_input.shape}")
         batch_size, seq_length, hidden_size = attention_output.size()
@@ -318,11 +322,15 @@ class FeedForwardOutput(nn.Module):
         if not ffn_output.device == residual_input.device:
             raise ValueError(f"ffn_output的设备必须和residual_input的设备相同喵! ffn_output.device: {ffn_output.device}, residual_input.device: {residual_input.device}")
         if ffn_output.dtype != residual_input.dtype:
-            raise ValueError(
-                f"ffn_output和residual_input的dtype必须一致喵！"
-                f"ffn_output.dtype: {ffn_output.dtype}, "
-                f"residual_input.dtype: {residual_input.dtype}"
-            )
+            device_type = ffn_output.device.type
+            autocast_enabled = torch.is_autocast_enabled(device_type)
+            allowed_dtypes = (torch.float32, torch.float16, torch.bfloat16)
+            if not autocast_enabled or not ffn_output.dtype in allowed_dtypes or not residual_input.dtype in allowed_dtypes:
+                raise ValueError(
+                    f"ffn_output和residual_input的dtype必须一致喵！"
+                    f"ffn_output.dtype: {ffn_output.dtype}, "
+                    f"residual_input.dtype: {residual_input.dtype}"
+                )
         if not ffn_output.shape == residual_input.shape:
             raise ValueError(f"ffn_output的形状必须和residual_input的形状相同喵! ffn_output.shape: {ffn_output.shape}, residual_input.shape: {residual_input.shape}")
         batch_size, seq_length, hidden_size = ffn_output.size()

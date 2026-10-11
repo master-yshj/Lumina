@@ -19,3 +19,9 @@ class Metric:
 
     def output_fields(self):
         raise NotImplementedError()
+
+    def distributed_state(self):
+        raise NotImplementedError(f"{self.__class__.__name__} 尚未实现 distributed_state 方法喵!")
+
+    def compute_from_distributed_state(self):
+        raise NotImplementedError(f"{self.__class__.__name__} 尚未实现 compute_from_distributed_state 方法喵!")

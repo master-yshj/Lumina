@@ -1,0 +1,10 @@
+{"id": "qa_crafts_04", "topic": "crafts", "source": "AI 编写：原创中文演示语料", "context": "小绣给布袋缝了一朵梅花，送给过生日的外婆。", "question": "布袋是送给谁的？", "answers": [{"text": "外婆", "answer_start": 18}]}
+{"id": "qa_neighborhood_01", "topic": "neighborhood", "source": "AI 编写：原创中文演示语料", "context": "社区义卖在星期六举行，地点是南侧的小广场。", "question": "义卖在哪里举行？", "answers": [{"text": "南侧的小广场", "answer_start": 14}]}
+{"id": "qa_kitchen_06", "topic": "kitchen", "source": "AI 编写：原创中文演示语料", "context": "姐姐烤了燕麦饼干，准备带到周六的野餐会上。", "question": "野餐会安排在哪一天？", "answers": [{"text": "周六", "answer_start": 13}]}
+{"id": "qa_sports_08", "topic": "sports", "source": "AI 编写：原创中文演示语料", "context": "爷爷每天沿着河边步道散步，走到石桥就返回。", "question": "爷爷走到哪里就返回？", "answers": [{"text": "石桥", "answer_start": 15}]}
+{"id": "qa_animals_01", "topic": "animals", "source": "AI 编写：原创中文演示语料", "context": "动物园的小熊猫住在竹林旁，饲养员叫它团团。", "question": "小熊猫叫什么名字？", "answers": [{"text": "团团", "answer_start": 18}]}
+{"id": "qa_weather_01", "topic": "weather", "source": "AI 编写：原创中文演示语料", "context": "气象小组每天早晨八点记录温度，记录本由小温保管。", "question": "谁保管气象记录本？", "answers": [{"text": "小温", "answer_start": 19}]}
+{"id": "qa_library_02", "topic": "library", "source": "AI 编写：原创中文演示语料", "context": "社区图书馆每周二闭馆，其他工作日照常开放。", "question": "社区图书馆哪天闭馆？", "answers": [{"text": "每周二", "answer_start": 5}]}
+{"id": "qa_travel_03", "topic": "travel", "source": "AI 编写：原创中文演示语料", "context": "小渡把火车票放在外套内袋，进站时很快就找到了。", "question": "火车票放在哪里？", "answers": [{"text": "外套内袋", "answer_start": 8}]}
+{"id": "qa_campus_07", "topic": "campus", "source": "AI 编写：原创中文演示语料", "context": "阿宁带来一盒彩色粉笔，送给负责板报的小组。", "question": "阿宁带来了什么？", "answers": [{"text": "彩色粉笔", "answer_start": 6}]}
+{"id": "qa_garden_06", "topic": "garden", "source": "AI 编写：原创中文演示语料", "context": "花坛里开着黄色的菊花，花旁停着一只蝴蝶。", "question": "菊花是什么颜色？", "answers": [{"text": "黄色", "answer_start": 5}]}

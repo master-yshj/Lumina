@@ -1,6 +1,0 @@
-# PARSE_REFACTOR_DEMO: QA Inference 当前没有注册 Task，因此此文件不是可运行用例。
-# 保留此文件仅用于记录未来配置形状，不由 smoke_test.py 执行。
-version: 1
-experiment:
-  name: parse_smoke_qa_inference
-# task、run 和 inference 等待 QA Inference Builder/TaskSpec 实现后再启用。

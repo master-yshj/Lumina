@@ -1,5 +1,4 @@
 
-
 class HiddenTSNEVisualizer:
     def __init__(self, layer=-1, max_samples=100, perplexity=10):
         self.layer = layer
