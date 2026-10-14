@@ -1,6 +1,6 @@
 # Lumina
 
-Lumina 是一个基于 PyTorch 的 NLP 实验框架，用于组织模型训练、测试、推理和可视化，适合学习训练流程和开展模型改进实验。通过 YAML 配置管理运行参数，将数据处理、对象组装、任务计算与训练流程分开组织。
+Lumina 是一个基于 PyTorch 的 NLP/LLM 实验框架，用于组织模型训练、测试、推理和可视化，适合学习训练流程和开展模型改进实验。通过 YAML 配置管理运行参数，将数据处理、对象组装、任务计算与训练流程分开组织。
 
 当前为 **Lumina 第 2 版**。面向新生学习的第 1 版见 [lumina_for_freshmen](https://github.com/master-yshj/lumina_for_freshmen)。
 
