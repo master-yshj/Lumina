@@ -64,20 +64,18 @@ class MetricCollection(Metric):
             output_list.extend(metric.output_fields())
         return output_list
 
-    def export_distributed(self,):
+    def _export_distributed(self,):
         layouts = []
         states = []
         for metric in self.metrics:
             metric_class = type(metric)
 
-            # AI 编写：若仍使用 Metric 的默认方法，说明没有提供统计导出实现。
             if metric_class.distributed_state is Metric.distributed_state:
                 raise NotImplementedError(
                     f"指标 {metric_class.__name__} "
                     f"尚未实现 distributed_state 方法喵!"
                 )
 
-            # AI 编写：还必须能根据合并后的统计值计算最终指标。
             if (
                     metric_class.compute_from_distributed_state
                     is Metric.compute_from_distributed_state
@@ -87,8 +85,6 @@ class MetricCollection(Metric):
                     f"尚未实现 compute_from_distributed_state 方法喵!"
                 )
 
-            # AI 编写：调用当前指标的方法，返回值保存到局部变量 state。
-            # 本项要求返回非空 dict，后面再检查其中的键和值。
             state = metric.distributed_state()
 
             if not isinstance(state, dict):
@@ -103,7 +99,6 @@ class MetricCollection(Metric):
                     f"不能返回空字典喵!"
                 )
 
-            # AI 编写：先检查当前指标 state 的全部键，确认可以按字符串排序。
             for state_key in state:
                 if not isinstance(state_key, str):
                     raise TypeError(
@@ -116,8 +111,6 @@ class MetricCollection(Metric):
                         f"指标 {metric_class.__name__} 的统计字段名不能为空喵!"
                     )
 
-            # AI 编写：每个指标单独创建 list[tuple[str, str]]，
-            # 每项保存字段名称及数值类型，不保存该字段的当前数值。
             state_fields = []
 
             for state_key in sorted(state):
@@ -141,19 +134,17 @@ class MetricCollection(Metric):
 
                 state_fields.append((state_key, type_name))
 
-                layout = {
-                    "metric_type": (
-                            metric_class.__module__ + "." + metric_class.__qualname__
-                    ),
-                    "output_fields": tuple(metric.output_fields()),
-                    "state_fields": tuple(state_fields),
-                }
+            layout = {
+                "metric_type": (
+                        metric_class.__module__ + "." + metric_class.__qualname__
+                ),
+                "output_fields": tuple(metric.output_fields()),
+                "state_fields": tuple(state_fields),
+            }
 
-                # AI 编写：两个列表按相同的指标顺序各追加一项，保持下标对应。
-                layouts.append(layout)
-                states.append(dict(state))
+            layouts.append(layout)
+            states.append(dict(state))
 
-                # AI 编写：所有指标处理完后，返回由两个列表组成的二元组。
             return layouts, states
 
     def prepare_distributed(self, runtime_context):
@@ -164,10 +155,8 @@ class MetricCollection(Metric):
         layouts, states = exported
         gathered_layouts = [None] * context.world_size
         dist.all_gather_object(gathered_layouts, layouts)
-        # AI 编写：reference 是 rank 0 导出的完整布局列表，作为比较基准。
         reference = gathered_layouts[0]
 
-        # AI 编写：rank 是列表下标，对应进程编号；received 是该进程的布局列表。
         for rank, received in enumerate(gathered_layouts):
             if received != reference:
                 raise ValueError(
@@ -176,8 +165,6 @@ class MetricCollection(Metric):
                     f"不一致的 rank: {rank}，布局: {received!r}"
                 )
 
-        # AI 编写：所有 rank 的布局一致后，保存本地已导出的布局列表。
-        # [] 表示已经准备好的空指标集合，区别于尚未准备的 None。
         self._distributed_layout = layouts
         return None
 
@@ -189,7 +176,7 @@ class MetricCollection(Metric):
         def collect_current():
             if self._distributed_layout is None:
                 raise ValueError(f"prepare_distributed 尚未被调用喵! 请先调用该方法喵!")
-            layouts, states = self.export_distributed()
+            layouts, states = self._export_distributed()
             if not layouts == self._distributed_layout:
                 raise ValueError(f"distributed_layout 出现变化了喵! 原layout: {self._distributed_layout!r} 现layout: {layouts!r}")
             return states
@@ -200,8 +187,8 @@ class MetricCollection(Metric):
         int_values = []
         float_values = []
         for metric_index, layout in enumerate(self._distributed_layout):
-            for filed_name, type_name in layout["state_fields"]:
-                value = local_states[filed_name]
+            for filed_index, (filed_name, type_name) in enumerate(layout["state_fields"]):
+                value = local_states[metric_index][filed_name]
                 if type_name == "int":
                     int_values.append(value)
                 elif type_name == "float":
@@ -215,6 +202,10 @@ class MetricCollection(Metric):
             int_tensor = torch.tensor(int_values, device=reduce_device, dtype=torch.int64)
         if float_values:
             float_tensor = torch.tensor(float_values, device=reduce_device, dtype=torch.float32)
+        if int_tensor is not None:
+            dist.all_reduce(int_tensor, op=dist.ReduceOp.SUM)
+        if float_tensor is not None:
+            dist.all_reduce(float_tensor, op=dist.ReduceOp.SUM)
         global_states = []
         int_index = 0
         float_index = 0
@@ -229,19 +220,15 @@ class MetricCollection(Metric):
                     float_index += 1
             global_states.append(state)
         def compute_global():
-            # AI 编写：output_dict 是本次汇总的结果字典，在指标循环前创建。
             output_dict = {}
 
             for metric_index, metric in enumerate(self.metrics):
-                # AI 编写：同一下标对应同一个指标及其统计字典。
-                # 将统计字典作为参数传入，不写回 metric 的本地计数。
                 metric_state = global_states[metric_index]
                 metric_result = metric.compute_from_distributed_state(
                     metric_state
                 )
                 metric_name = type(metric).__name__
 
-                # AI 编写：每项指标必须返回非空 dict。
                 if not isinstance(metric_result, dict):
                     raise TypeError(
                         f"指标 {metric_name} 必须返回 dict 喵! "
@@ -253,7 +240,6 @@ class MetricCollection(Metric):
                         f"指标 {metric_name} 不能返回空结果字典喵!"
                     )
 
-                # AI 编写：按当前指标的下标，读取准备阶段保存的结果字段。
                 expected_fields = set(
                     self._distributed_layout[metric_index]["output_fields"]
                 )
@@ -268,7 +254,6 @@ class MetricCollection(Metric):
                         f"多余字段: {extra_fields!r}"
                     )
 
-                # AI 编写：合并之前检查重名，避免覆盖前一个指标的结果。
                 duplicate_fields = set(output_dict) & actual_fields
                 if duplicate_fields:
                     raise ValueError(
@@ -276,10 +261,8 @@ class MetricCollection(Metric):
                         f"重复字段: {duplicate_fields!r}"
                     )
 
-                # AI 编写：全部检查通过后，将当前指标结果原地合并到 output_dict。
                 output_dict.update(metric_result)
 
-            # AI 编写：所有指标计算结束后，返回完整结果字典。
             return output_dict
 
         output_dict = context.run_local('计算全局指标', compute_global)
