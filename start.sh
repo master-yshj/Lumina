@@ -9,5 +9,5 @@ exec torchrun \
     --nproc_per_node=1 \
     --max_restarts=0 \
     start_train.py \
-    --config cfg/demo/mlm_train.yaml \
+    --config cfg/demo/mlm_large_train.yaml \
     "$@"

@@ -592,6 +592,14 @@ class Trainer:
         train_summary = {'run': run_summary, 'interval': interval_summary, 'metrics': metrics}
         return train_summary
 
+    def _collect_valid_summary(self, accumulator, *, include_metrics=True):
+        run_summary = accumulator.summarize()
+        metrics = {}
+        if include_metrics:
+            metrics = self.valid_metric_collection.compute()
+        valid_summary = {'run': run_summary, 'metrics': metrics}
+        return valid_summary
+
     def _make_metrics_row(self,summary,metric_values,interval_summary=None):
         row = {'global_step': self.global_step, 'avg_loss': summary['avg_loss']}
         if interval_summary is not None:
@@ -662,13 +670,44 @@ class Trainer:
             raise ValueError(f"valid_dataloader 不能为空喵!")
         accumulator = LossAccumulator()
         self.valid_metric_collection.reset()
+        log_every_batches = 100
+        total_batches = len(valid_dataloader)
         for batch in valid_dataloader:
             step_record = self.valid_step(batch)
             accumulator.update(step_record)
-        loss_summary=accumulator.summarize()
-        if loss_summary['completed_batches'] == 0:
-            raise ValueError(f"DataLoader 未产生批次, completed_batches 为0了喵!")
-        valid_metrics = self.valid_metric_collection.compute()
+            completed_batches = accumulator.batch_count
+            needs_log = (
+                completed_batches == 1
+                or completed_batches % log_every_batches == 0
+                or completed_batches == total_batches
+            )
+
+            if needs_log:
+                log_summary = self._collect_valid_summary(
+                    accumulator,
+                    include_metrics=True,
+                )
+
+                def log_only():
+                    message = (
+                        f"[valid] step={self.global_step}, "
+                        f"batch={log_summary['run']['completed_batches']} / {total_batches}, "
+                        f"loss={log_summary['run']['avg_loss']}, "
+                        f"metrics={log_summary['metrics']}"
+                    )
+                    self._log_info(message)
+                    return None
+
+                log_only()
+        if accumulator.batch_count == 0:
+            raise ValueError("DataLoader 未产生批次, completed_batches 为0了喵!")
+
+        valid_summary = self._collect_valid_summary(
+            accumulator,
+            include_metrics=True,
+        )
+        loss_summary = valid_summary["run"]
+        valid_metrics = valid_summary["metrics"]
         validation_summary = {
             'avg_loss': loss_summary['avg_loss'],
             'losses': loss_summary['losses'],
@@ -1079,7 +1118,7 @@ class Trainer:
                             self._log_memory_status('validation')
                             if needs_log:
                                 def log_event():
-                                    message = f"step={self.global_step}, loss={train_summary['run']['avg_loss']}, interval_loss={train_summary['interval']['avg_loss']}, lr={self._get_current_lr()}"
+                                    message = f"step={self.global_step} / {total_steps}, loss={train_summary['run']['avg_loss']}, interval_loss={train_summary['interval']['avg_loss']}, lr={self._get_current_lr()}"
                                     self._log_info(message)
                                     return None
                                 context.run_main('记录训练摘要', log_event)

@@ -77,7 +77,7 @@ TASK_BUILDER_REGISTRY = TaskRegistry()
 TASK_BUILDER_REGISTRY.register(
     'mlmpretrain', ['mlm_pretrain'], MLMBuilder,
     config_spec={
-        'dataset_types': ('demo_mlm',),
+        'dataset_types': ('demo_mlm', 'base_zhwiki'),
         'dataset_params_schema': s.MLMDatasetParamsConfig,
         'collator_key': 'mlm_collator',
         'collator_params_schema': s.MLMCollatorParamsConfig,
