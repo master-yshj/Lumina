@@ -819,16 +819,34 @@ class Trainer:
                 global_last_loss = last_loss
                 if context.enabled:
                     reduce_device = context.device
-                    last_loss_tensor = torch.tensor(last_loss, dtype=torch.float64, device=reduce_device)
-                    dist.all_reduce(last_loss_tensor, op=dist.ReduceOp.SUM)
-                    global_last_loss = float(last_loss_tensor.item()) / context.world_size
-                    return None
+                    last_loss_tensor = torch.tensor(
+                        last_loss,
+                        dtype=torch.float64,
+                        device=reduce_device,
+                    )
+                    dist.all_reduce(
+                        last_loss_tensor,
+                        op=dist.ReduceOp.SUM,
+                    )
+                    global_last_loss = (
+                            float(last_loss_tensor.item())
+                            / context.world_size
+                    )
+
                 if checkpoint_options['enabled']:
                     def save_final():
-                        checkpoint = build_checkpoint(self.task, self.optimizer, self.scheduler, self)
-                        last_path = checkpoint_options['directory'] / 'last.pt'
+                        checkpoint = build_checkpoint(
+                            self.task,
+                            self.optimizer,
+                            self.scheduler,
+                            self,
+                        )
+                        last_path = (
+                                checkpoint_options['directory'] / 'last.pt'
+                        )
                         save_checkpoint(checkpoint, last_path)
                         return str(last_path)
+
                     context.run_main('保存最终权重', save_final)
         summary = {
             'completed_iters': self.global_step,

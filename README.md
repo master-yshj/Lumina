@@ -29,17 +29,16 @@ python check.py
 
 ## Demo
 
-`cfg/demo/` 提供 12 份 YAML，默认使用 **CPU、FP32、单进程**：
+`cfg/demo/` 提供 8 份 YAML，默认使用 **CPU、FP32、单进程**：
 
 | 任务 | 训练 | 测试 | 推理 | 可视化 |
 | --- | --- | --- | --- | --- |
 | MLM | `mlm_train.yaml` | `mlm_test.yaml` | `mlm_inference.yaml` | `mlm_visualize.yaml` |
 | QA | `qa_train.yaml` | `qa_test.yaml` | `qa_inference.yaml` | `qa_visualize.yaml` |
-| GPT（未实现） | `gpt_train.yaml` | `gpt_test.yaml` | `gpt_inference.yaml` | `gpt_visualize.yaml` |
 
 演示数据位于 `dataset/demo/`，每个任务 100 条，按训练、验证、测试 **8:1:1** 划分；可视化复用验证集。数据由 AI 生成，仅用于演示。MLM 与 QA 共用 `tokenizer/demo/vocab.txt`，无需下载额外语料即可开始 MLM demo。
 
-**GPT 的实现尚未接入。** 四份 GPT 配置保留了 `???` 占位项，不能直接运行。其他配置中的 `???` 是运行前需要填写的权重或训练快照路径。
+配置中的 `???` 是运行前需要填写的权重或训练快照路径。MLM 与 QA 各提供训练、测试、推理、可视化四份配置；演示数据随仓库提供，训练权重由用户运行生成。
 
 ## 使用流程
 

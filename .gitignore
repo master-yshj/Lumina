@@ -40,3 +40,25 @@ Thumbs.db
 
 # AI 编写: local framework checks
 /tests/
+
+# AI 编写：个人实验，不属于框架发布内容。
+/cfg/tiny_attnres/
+/cfg/tiny_attnres_continue/
+/cfg/moe_full_sft/
+/cfg/demo/gpt*.yaml
+/cfg/demo/mlm_large_train.yaml
+/dataset/demo/gpt/
+/tasks/GPT_PreTrain/
+/tasks/GPT_SFT/
+/tasks/GPT_MoE_PreTrain/
+/tokenizer/gpt_tokenizer/
+/loaders/gpt.py
+/models/Transformer/modeling/moe_gpt.py
+/models/Transformer/modules/moe.py
+/models/Transformer/modules/moe_gpt.py
+/models/Transformer/modules/attention_residuals.py
+/metrics/implementations/language_model_nll.py
+/metrics/implementations/moe_routing.py
+/visualize/methods/residual_diagnostics.py
+/serve_inference.py
+/train_tiny_attnres*.sh

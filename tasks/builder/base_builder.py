@@ -433,6 +433,7 @@ class BaseBuilder:
         if split in self.dataloaders:
             raise ValueError(f'重复构造数据划分：{split}')
         dataset=self._call('build_dataset',f'data.dataset.splits.{split}',self.build_dataset,split)
+        self.datasets[split] = dataset
         collator=self._call('build_collator','data.collator',self.build_collator,split)
         local_loader_kwargs = deepcopy(self.config['data']['loaders'][split])
         sampler = None
@@ -450,7 +451,6 @@ class BaseBuilder:
                                 worker_init_fn=seed_worker, generator=generator, **local_loader_kwargs)
         if len(loader) == 0:
             raise ValueError(f'{split} 没有可用 batch，请检查数据内容、batch_size 和 drop_last')
-        self.datasets[split] = dataset
         self.collators[split] = collator
         self.dataloaders[split] = loader
         loader_description = {

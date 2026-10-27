@@ -145,7 +145,7 @@ class MetricCollection(Metric):
             layouts.append(layout)
             states.append(dict(state))
 
-            return layouts, states
+        return layouts, states
 
     def prepare_distributed(self, runtime_context):
         context = runtime_context

@@ -6,11 +6,9 @@
   "split_policy": "任务独立；主题与ID排序；每主题shuffle后8/1/1；各划分再次shuffle",
   "record_counts": {
     "mlm": 100,
-    "qa": 100,
-    "gpt": 100
+    "qa": 100
   },
   "visualize_source": "复用各任务 valid.jsonl，不新增记录",
-  "gpt_status": "仅原始预训练文本；Tokenizer、Dataset、标签和训练接口尚未实现",
   "vocabulary": {
     "size": 958,
     "special_token_ids": {
@@ -21,7 +19,7 @@
       "[MASK]": 4
     },
     "ordering": "五个固定特殊Token在前，其余字符按Unicode码位排序",
-    "scope": "覆盖全部MLM/QA人工语料的正文与问题字符，包含valid/test；不含GPT",
+    "scope": "覆盖全部MLM/QA人工语料的正文与问题字符，包含valid/test",
     "usage": "MLM/QA共用，迁移主干时须保持Token与ID一致；不是训练集学习的词表"
   },
   "splits": {
@@ -330,159 +328,6 @@
           "qa_travel_02"
         ]
       }
-    },
-    "gpt": {
-      "train": {
-        "records": 80,
-        "topics": {
-          "animals": 8,
-          "campus": 8,
-          "crafts": 8,
-          "garden": 8,
-          "kitchen": 8,
-          "library": 8,
-          "neighborhood": 8,
-          "sports": 8,
-          "travel": 8,
-          "weather": 8
-        },
-        "ids": [
-          "gpt_animals_04",
-          "gpt_neighborhood_03",
-          "gpt_campus_01",
-          "gpt_library_04",
-          "gpt_campus_09",
-          "gpt_kitchen_01",
-          "gpt_sports_09",
-          "gpt_kitchen_03",
-          "gpt_sports_03",
-          "gpt_crafts_03",
-          "gpt_travel_01",
-          "gpt_garden_02",
-          "gpt_garden_04",
-          "gpt_animals_03",
-          "gpt_campus_02",
-          "gpt_campus_05",
-          "gpt_library_05",
-          "gpt_animals_10",
-          "gpt_crafts_02",
-          "gpt_travel_05",
-          "gpt_crafts_05",
-          "gpt_sports_04",
-          "gpt_garden_09",
-          "gpt_sports_07",
-          "gpt_library_06",
-          "gpt_library_01",
-          "gpt_sports_02",
-          "gpt_weather_08",
-          "gpt_crafts_07",
-          "gpt_kitchen_09",
-          "gpt_campus_08",
-          "gpt_neighborhood_09",
-          "gpt_neighborhood_08",
-          "gpt_weather_07",
-          "gpt_library_08",
-          "gpt_crafts_10",
-          "gpt_travel_10",
-          "gpt_kitchen_08",
-          "gpt_sports_01",
-          "gpt_animals_08",
-          "gpt_kitchen_04",
-          "gpt_crafts_08",
-          "gpt_travel_09",
-          "gpt_garden_10",
-          "gpt_weather_10",
-          "gpt_travel_07",
-          "gpt_garden_08",
-          "gpt_animals_06",
-          "gpt_kitchen_05",
-          "gpt_weather_03",
-          "gpt_library_03",
-          "gpt_weather_02",
-          "gpt_campus_03",
-          "gpt_weather_09",
-          "gpt_campus_06",
-          "gpt_animals_05",
-          "gpt_neighborhood_04",
-          "gpt_animals_09",
-          "gpt_neighborhood_06",
-          "gpt_animals_07",
-          "gpt_travel_08",
-          "gpt_kitchen_10",
-          "gpt_campus_04",
-          "gpt_garden_03",
-          "gpt_library_10",
-          "gpt_neighborhood_10",
-          "gpt_neighborhood_07",
-          "gpt_travel_04",
-          "gpt_travel_06",
-          "gpt_garden_05",
-          "gpt_crafts_06",
-          "gpt_kitchen_07",
-          "gpt_crafts_01",
-          "gpt_sports_10",
-          "gpt_neighborhood_05",
-          "gpt_sports_06",
-          "gpt_weather_04",
-          "gpt_library_09",
-          "gpt_weather_05",
-          "gpt_garden_01"
-        ]
-      },
-      "valid": {
-        "records": 10,
-        "topics": {
-          "animals": 1,
-          "campus": 1,
-          "crafts": 1,
-          "garden": 1,
-          "kitchen": 1,
-          "library": 1,
-          "neighborhood": 1,
-          "sports": 1,
-          "travel": 1,
-          "weather": 1
-        },
-        "ids": [
-          "gpt_crafts_04",
-          "gpt_neighborhood_01",
-          "gpt_kitchen_06",
-          "gpt_sports_08",
-          "gpt_animals_01",
-          "gpt_weather_01",
-          "gpt_library_02",
-          "gpt_travel_03",
-          "gpt_campus_07",
-          "gpt_garden_06"
-        ]
-      },
-      "test": {
-        "records": 10,
-        "topics": {
-          "animals": 1,
-          "campus": 1,
-          "crafts": 1,
-          "garden": 1,
-          "kitchen": 1,
-          "library": 1,
-          "neighborhood": 1,
-          "sports": 1,
-          "travel": 1,
-          "weather": 1
-        },
-        "ids": [
-          "gpt_library_07",
-          "gpt_animals_02",
-          "gpt_weather_06",
-          "gpt_campus_10",
-          "gpt_garden_07",
-          "gpt_neighborhood_02",
-          "gpt_sports_05",
-          "gpt_kitchen_02",
-          "gpt_crafts_09",
-          "gpt_travel_02"
-        ]
-      }
     }
   },
   "sha256": {
@@ -492,9 +337,6 @@
     "qa/train.jsonl": "802ac7640970ad6087e34b9cccfbf9d41ec448d96fbdc873163f6546511c2db0",
     "qa/valid.jsonl": "ac8abb8828d42ec1ee8899c79a6c854f73a40d2319b9099baa0b1a20f375b604",
     "qa/test.jsonl": "61fb233fed331e9e231318274b840bb199ed599cdef01e8c94f724268a6243d3",
-    "gpt/train.jsonl": "504e370686368eae83453c27ea736ae352b32512dbe328384560e61324a73f2b",
-    "gpt/valid.jsonl": "282ba64e7a2da7ee5e50276b2a49ad2a3536971a8ed1567652a8135761e183ad",
-    "gpt/test.jsonl": "04e409895eac2073a18209ccffa8f9e58ec7dfb8d1bae8d189f7027aacb23908",
     "vocab.txt": "15d46e0a5b57cbd53822cd5ba622d229ca5949223e223cacce6bd443c83bb35a"
   }
 }

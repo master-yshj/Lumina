@@ -193,3 +193,21 @@ class PrecisionController:
         validated_state = validate_precision_state(state)
         return validated_state
 
+    def load_state_dict(self, state):
+        """AI编写：恢复checkpoint中的精度状态，与state_dict组成保存/加载接口。
+
+        :param state: dict，包含precision: str和scaler_state: dict | None。
+        :return: None；原地恢复FP16 GradScaler，FP32/BF16只核对精度。
+        保留构造时的设备与autocast类型，使断点续训继续使用原有精度策略。
+        """
+        validated_state = validate_precision_state(state)
+        if validated_state['precision'] != self.precision:
+            raise ValueError(
+                f"恢复精度不一致喵! 当前: {self.precision}，"
+                f"checkpoint: {validated_state['precision']}，请人工核对runtime.precision。"
+            )
+        if self.precision == 'fp16':
+            if self.scaler is None:
+                raise RuntimeError("FP16恢复缺少GradScaler喵! 请人工检查精度控制器的构造。")
+            self.scaler.load_state_dict(validated_state['scaler_state'])
+        return None
